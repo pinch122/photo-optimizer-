@@ -1,8 +1,8 @@
 import enum
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
-from sqlalchemy import Column, String, Integer, BigInteger, Boolean, DateTime, Enum, ForeignKey, Float
+from typing import Optional, List
+from sqlalchemy import Column, String, Integer, BigInteger, Boolean, DateTime, Enum, ForeignKey, Float, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
@@ -42,6 +42,10 @@ class MediaAsset(Base):
         cascade="all, delete-orphan",
         uselist=False
     )
+    embeddings: Mapped[List["MediaEmbedding"]] = relationship(
+        back_populates="media_asset",
+        cascade="all, delete-orphan"
+    )
 
 class PhotoMetadata(Base):
     __tablename__ = "photo_metadata"
@@ -64,3 +68,27 @@ class PhotoMetadata(Base):
 
     # Back-reference
     media_asset: Mapped["MediaAsset"] = relationship(back_populates="photo_metadata")
+
+class MediaEmbedding(Base):
+    __tablename__ = "media_embeddings"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    media_asset_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("media_assets.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    model_name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    vector_dimension: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), 
+        default=lambda: datetime.now(timezone.utc), 
+        nullable=False
+    )
+
+    # Back-reference
+    media_asset: Mapped["MediaAsset"] = relationship(back_populates="embeddings")
+
+    # Constraints
+    __table_args__ = (
+        UniqueConstraint("media_asset_id", "model_name", name="uq_asset_model"),
+    )

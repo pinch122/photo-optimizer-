@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.0] - 2026-06-26
+
+### Added
+* **AI Embedding Pipeline**: Asynchronous 512-dimension vector calculation using local CLIP (`clip-ViT-B-32`) models.
+* **Qdrant Vector Database Integration**: Automated Cosine similarity index creation and idempotent vector point upserts/deletes.
+* **Vector-Model Versioning**: Created a `media_embeddings` table to isolate embedding models and collections, facilitating future model upgrades.
+* **Reprocessing API Route**: Exposed `POST /media/{id}/reprocess` to delete child database records and force background vector re-calculations.
+* **Safe Rollbacks**: Integrated database rollback triggers to delete vector points from Qdrant if database commits abort.
+* **Offline Testing Mocks**: Configured `MockSentenceTransformer` and Qdrant in-memory client for rapid, internet-independent test suite execution.
+
+---
+
 ## [0.1.0] - 2026-06-26
 
 ### Added

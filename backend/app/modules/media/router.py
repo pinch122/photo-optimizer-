@@ -1,15 +1,17 @@
 import io
 import uuid
 import os
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, UploadFile, File, BackgroundTasks, HTTPException, status, Query
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.orm import selectinload
 from app.database import get_db
-from app.modules.media.models import MediaAsset
+from app.modules.media.models import MediaAsset, PhotoMetadata, MediaEmbedding, AssetStatus
 from app.modules.media.schemas import UploadResponse, MediaAssetResponse, StatusResponse
 from app.modules.media.services.upload_service import UploadService, DuplicateAssetError
+from app.modules.media.services.storage_service import StorageService
 from app.modules.media.worker import process_media_task
 from app.logging_config import logger
 
@@ -63,6 +65,58 @@ async def upload_media(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unexpected error occurred during upload ingestion pipeline."
+        )
+
+@router.post("/{id}/reprocess", response_model=StatusResponse, status_code=status.HTTP_202_ACCEPTED)
+async def reprocess_media(
+    id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    HTTP POST endpoint to force background reprocessing and vector re-indexing of a media asset:
+    1. Fetches the MediaAsset record by ID.
+    2. Clears existing child records (EXIF metadata and vector registrations) to avoid unique constraints.
+    3. Resets status back to UPLOADED, cleans up old thumbnails, and queues background task execution.
+    """
+    query = select(MediaAsset).where(MediaAsset.id == id)
+    result = await db.execute(query)
+    asset = result.scalar_one_or_none()
+    
+    if not asset:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Media asset not found."
+        )
+        
+    try:
+        # 1. Clean up existing child extension tables
+        await db.execute(delete(PhotoMetadata).where(PhotoMetadata.media_asset_id == id))
+        await db.execute(delete(MediaEmbedding).where(MediaEmbedding.media_asset_id == id))
+        
+        # 2. Safely clean up old thumbnail file on disk
+        StorageService.delete_file(asset.thumbnail_path)
+        
+        # 3. Reset parent model columns to ingest state
+        asset.status = AssetStatus.UPLOADED
+        asset.thumbnail_path = None
+        asset.error_message = None
+        asset.updated_at = datetime.now(timezone.utc)
+        
+        await db.commit()
+        await db.refresh(asset)
+        
+        # 4. Enqueue background processing pipeline again
+        background_tasks.add_task(process_media_task, asset.id)
+        
+        return asset
+        
+    except Exception as e:
+        logger.error(f"Reprocess Router: Error resetting assets pipeline for [{id}]: {e}")
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to trigger background re-processing execution."
         )
 
 @router.get("/{id}/status", response_model=StatusResponse)

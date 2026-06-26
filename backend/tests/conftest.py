@@ -1,6 +1,7 @@
 import os
 import shutil
 import pytest
+import numpy as np
 from pathlib import Path
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
@@ -10,7 +11,22 @@ from qdrant_client import QdrantClient
 os.environ["STORAGE_PATH"] = "./test_storage"
 os.environ["LOG_LEVEL"] = "WARNING"
 
-# 2. Initialize in-memory SQLite for test database
+# 2. Mock sentence-transformers to bypass external network downloads during testing
+class MockSentenceTransformer:
+    def __init__(self, model_name_or_path, cache_folder=None, **kwargs):
+        self.model_name_or_path = model_name_or_path
+        self.cache_folder = cache_folder
+
+    def encode(self, sentences, normalize_embeddings=True, **kwargs):
+        # Return a normalized dummy 512-dimension float vector
+        vector = np.zeros(512, dtype=np.float32)
+        vector[0] = 1.0  # Simple unit vector (norm = 1.0)
+        return vector
+
+import sentence_transformers
+sentence_transformers.SentenceTransformer = MockSentenceTransformer
+
+# 3. Initialize in-memory SQLite for test database
 test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
 test_session_local = async_sessionmaker(
     bind=test_engine,
@@ -18,17 +34,17 @@ test_session_local = async_sessionmaker(
     expire_on_commit=False
 )
 
-# 3. Patch app.database module parameters to direct writes to test SQLite engine
+# 4. Patch app.database module parameters to direct writes to test SQLite engine
 import app.database
 app.database.async_session = test_session_local
 app.database.engine = test_engine
 
-# 4. Patch app.qdrant_client_helper to return in-memory Qdrant client
+# 5. Patch app.qdrant_client_helper to return in-memory Qdrant client
 import app.qdrant_client_helper
 mock_qdrant_client = QdrantClient(location=":memory:")
 app.qdrant_client_helper.get_qdrant_client = lambda: mock_qdrant_client
 
-# 5. Define dependency override function
+# 6. Define dependency override function
 async def override_get_db():
     async with test_session_local() as session:
         try:
@@ -36,7 +52,7 @@ async def override_get_db():
         finally:
             await session.close()
 
-# 6. Apply dependency overrides to FastAPI application
+# 7. Apply dependency overrides to FastAPI application
 from main import app
 from app.database import Base, get_db
 app.dependency_overrides[get_db] = override_get_db
