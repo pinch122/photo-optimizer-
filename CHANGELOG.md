@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **API Validation & Extensibility**: Configured robust request validation schemas with optional parameters as future filter placeholders.
 * **Offline Search Tests**: Added comprehensive test cases inside `test_search.py` verifying query vector calculations, validation errors, and end-to-end ranked listings.
 
+### Fixed
+* **CPU Dependency Optimization**: Updated dependency configurations to pull CPU-only wheels for PyTorch (`torch` and `torchvision`) from PyTorch's custom index URL, preventing massive CUDA binary downloads, network timeouts, and failing Docker builds.
+
 ---
 
 ## [0.2.0] - 2026-06-26
