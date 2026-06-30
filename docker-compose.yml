@@ -1,4 +1,4 @@
-version: '3.8'
+
 
 services:
   db:
@@ -29,7 +29,7 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      test: ["CMD-SHELL", "timeout 5 bash -c ':> /dev/tcp/localhost/6333' || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 5

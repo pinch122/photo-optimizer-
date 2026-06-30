@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-07-01
+
+### Fixed
+* **Qdrant Health Check**: Replaced `curl`-based health check with bash TCP port probe (`/dev/tcp/localhost/6333`) since the official `qdrant/qdrant` image does not ship `curl`.
+* **Docker Compose Cleanup**: Removed the obsolete `version: '3.8'` key that produced deprecation warnings on modern Docker Compose.
+
+---
+
 ## [0.3.0] - 2026-07-01
 
 ### Added
