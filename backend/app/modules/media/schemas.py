@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 from app.modules.media.models import MediaType, AssetStatus
@@ -46,3 +46,23 @@ class StatusResponse(BaseModel):
     id: UUID
     status: AssetStatus
     error_message: Optional[str] = None
+
+class SearchResultResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    filename: str
+    mime_type: str
+    media_type: MediaType
+    file_size: int
+    status: AssetStatus
+    taken_at: datetime
+    created_at: datetime
+    score: float
+    photo_metadata: Optional[PhotoMetadataResponse] = None
+
+class SearchResponse(BaseModel):
+    items: List[SearchResultResponse]
+    total: int
+    limit: int
+    offset: int

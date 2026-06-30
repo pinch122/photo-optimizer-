@@ -9,9 +9,10 @@ from sqlalchemy import select, delete
 from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.modules.media.models import MediaAsset, PhotoMetadata, MediaEmbedding, AssetStatus
-from app.modules.media.schemas import UploadResponse, MediaAssetResponse, StatusResponse
+from app.modules.media.schemas import UploadResponse, MediaAssetResponse, StatusResponse, SearchResponse
 from app.modules.media.services.upload_service import UploadService, DuplicateAssetError
 from app.modules.media.services.storage_service import StorageService
+from app.modules.media.services.search_service import SearchService
 from app.modules.media.worker import process_media_task
 from app.logging_config import logger
 
@@ -117,6 +118,36 @@ async def reprocess_media(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to trigger background re-processing execution."
+        )
+
+@router.get("/search", response_model=SearchResponse)
+async def search_media(
+    q: str = Query(..., min_length=1, description="Natural language search query"),
+    limit: int = Query(10, ge=1, le=100, description="Maximum number of items to return"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Search gallery using natural language semantic text queries.
+    """
+    try:
+        results = await SearchService.search_media(
+            db=db,
+            query_text=q,
+            limit=limit,
+            offset=offset
+        )
+        return results
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Search Router: Query search failure for q='{q}': {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unexpected error occurred during query evaluation."
         )
 
 @router.get("/{id}/status", response_model=StatusResponse)

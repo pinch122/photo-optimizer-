@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-07-01
+
+### Added
+* **Semantic Search Engine**: Enabled natural language search (e.g., "beach sunset", "my dog") using CLIP text query vector encoding.
+* **Unified Query API**: Integrated `QdrantClient.query_points` to support fast, modern k-NN vector retrieval.
+* **Relational Hydration & Re-ranking**: Orchestrated eager joins (`selectinload`) to retrieve PostgreSQL asset metadata and sorted them by descending cosine similarity scores.
+* **Pagination Support**: Exposed configurable search limits and offsets to allow client-side pagination.
+* **API Validation & Extensibility**: Configured robust request validation schemas with optional parameters as future filter placeholders.
+* **Offline Search Tests**: Added comprehensive test cases inside `test_search.py` verifying query vector calculations, validation errors, and end-to-end ranked listings.
+
 ---
 
 ## [0.2.0] - 2026-06-26

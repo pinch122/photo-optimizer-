@@ -91,3 +91,43 @@ class QdrantService:
         except Exception as e:
             logger.error(f"Qdrant Service: Error deleting vector point for [{asset_id}] from '{collection_name}': {e}")
             # Raise no exception to avoid interrupting clean-up chains
+
+    @classmethod
+    def search_vectors(
+        cls,
+        vector: List[float],
+        model_name: str,
+        limit: int = 10,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """
+        Queries Qdrant for Top-K closest matching vectors using cosine distance similarity.
+        Returns a list of dictionaries with point IDs (uuids) and similarity scores.
+        """
+        collection_name = cls.get_collection_name(model_name)
+        client = get_qdrant_client()
+        
+        try:
+            if not client.collection_exists(collection_name):
+                logger.warning(f"Qdrant Service: Collection '{collection_name}' does not exist during search query.")
+                return []
+                
+            response = client.query_points(
+                collection_name=collection_name,
+                query=vector,
+                limit=limit,
+                offset=offset,
+                with_payload=True
+            )
+            
+            output = []
+            for hit in response.points:
+                output.append({
+                    "id": uuid.UUID(hit.id),
+                    "score": float(hit.score),
+                    "payload": hit.payload
+                })
+            return output
+        except Exception as e:
+            logger.error(f"Qdrant Service: Search query failed on collection '{collection_name}': {e}")
+            raise

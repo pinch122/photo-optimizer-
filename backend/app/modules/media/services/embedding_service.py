@@ -64,3 +64,28 @@ class EmbeddingService:
             cls.generate_embedding_sync,
             file_path
         )
+
+    @classmethod
+    def generate_text_embedding_sync(cls, text: str) -> List[float]:
+        """
+        Synchronously encodes a natural language query into a 512-dimension vector.
+        """
+        try:
+            model = cls.get_model()
+            embedding_array = model.encode(text, normalize_embeddings=True)
+            return embedding_array.tolist()
+        except Exception as e:
+            logger.error(f"CLIP Model: Text inference failure on '{text}': {e}")
+            raise ValueError(f"Inference error computing text query vector: {e}")
+
+    @classmethod
+    async def generate_text_embedding(cls, text: str) -> List[float]:
+        """
+        Executes CPU-bound PyTorch text tokenizer and model run on thread executor.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            cls.generate_text_embedding_sync,
+            text
+        )
