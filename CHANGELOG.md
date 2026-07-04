@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-07-04
+
+### Optimized
+* **Docker Context Compression**: Added `.dockerignore` files to both the workspace root and the `frontend/` directory to prevent `node_modules`, `.next`, and virtual environment cache folders from bloating the Docker context. Successfully compressed the build context size by **99.96%** (from ~431 MB to 185 kB).
+* **NPM Cache Utilization**: Optimized `frontend/Dockerfile` dependency stages to copy `package*.json` separately before running `npm install`, maximizing layer caching and speeding up subsequent container builds.
+
+---
+
 ## [0.4.0] - 2026-07-04
 
 ### Added

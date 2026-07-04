@@ -3,7 +3,7 @@ FROM node:18-alpine
 WORKDIR /app
 
 # Copy package configurations
-COPY package.json ./
+COPY package*.json ./
 
 # Install dependencies (fallback to npm install if lockfile missing)
 RUN npm install
