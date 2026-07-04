@@ -1,13 +1,14 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { uploadMedia, getMediaStatus } from "@/lib/api";
 import { formatFileSize } from "@/lib/utils";
 import PageHeader from "@/components/layout/PageHeader";
 import StatusBadge from "@/components/shared/StatusBadge";
-import { Upload, CloudUpload, FileImage, X, RotateCw, Eye } from "lucide-react";
+import { Upload, CloudUpload, FileImage, X, RotateCw, Eye, CheckCircle2, AlertCircle } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import type { AssetStatus } from "@/lib/types";
 
 interface QueueItem {
@@ -21,9 +22,19 @@ interface QueueItem {
 }
 
 export default function UploadPage() {
+  const router = useRouter();
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [isDragging, setIsDragging] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Auto-dismiss toast after 4 seconds
+  useEffect(() => {
+    if (toast) {
+      const timer = setTimeout(() => setToast(null), 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [toast]);
 
   const updateItem = useCallback((id: string, updates: Partial<QueueItem>) => {
     setQueue((prev) => prev.map((item) => (item.id === id ? { ...item, ...updates } : item)));
@@ -36,8 +47,14 @@ export default function UploadPage() {
           const status = await getMediaStatus(assetId);
           if (status.status === "READY") {
             updateItem(queueId, { status: "done", assetStatus: "READY", progress: 100 });
+            setToast({ message: "Photo fully processed and ready!", type: "success" });
+            // Redirect to gallery once processed
+            setTimeout(() => {
+              router.push("/gallery");
+            }, 1200);
           } else if (status.status === "FAILED") {
             updateItem(queueId, { status: "error", assetStatus: "FAILED", error: status.error_message || "Processing failed" });
+            setToast({ message: `Processing failed: ${status.error_message || "Unknown error"}`, type: "error" });
           } else {
             setTimeout(poll, 2000);
           }
@@ -47,7 +64,7 @@ export default function UploadPage() {
       };
       poll();
     },
-    [updateItem]
+    [updateItem, router]
   );
 
   const uploadMutation = useMutation({
@@ -58,9 +75,17 @@ export default function UploadPage() {
       pollStatus(item.id, result.id);
       return result;
     },
-    onError: (error: Error, item: QueueItem) => {
-      const msg = error.message.includes("409") ? "Duplicate file already exists" : error.message;
+    onSuccess: (data, item) => {
+      setToast({ message: `Successfully uploaded ${item.file.name}!`, type: "success" });
+    },
+    onError: (error: any, item: QueueItem) => {
+      const isConflict = error.response?.status === 409 || error.message?.includes("409");
+      const msg = isConflict
+        ? "Duplicate file detected. This file already exists in the gallery."
+        : error.response?.data?.detail?.message || error.response?.data?.detail || error.message || "Upload failed.";
+      
       updateItem(item.id, { status: "error", error: msg, progress: 0 });
+      setToast({ message: `Failed to upload ${item.file.name}: ${msg}`, type: "error" });
     },
   });
 
@@ -103,7 +128,7 @@ export default function UploadPage() {
     <>
       <PageHeader title="Upload Photos" description="Add new photos to your PhotoMind AI library" />
 
-      {/* Drop Zone */}
+      {/* Drag & Drop zone */}
       <div
         onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
         onDragLeave={() => setIsDragging(false)}
@@ -172,7 +197,9 @@ export default function UploadPage() {
                     </span>
                     {item.assetStatus && <StatusBadge status={item.assetStatus} />}
                     {item.error && (
-                      <span className="text-xs" style={{ color: "var(--error)" }}>{item.error}</span>
+                      <span className="text-xs font-medium" style={{ color: "var(--error)" }}>
+                        {item.error}
+                      </span>
                     )}
                   </div>
                   {/* Progress bar */}
@@ -220,6 +247,26 @@ export default function UploadPage() {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Floating Toast Notification */}
+      {toast && (
+        <div
+          className="fixed bottom-20 right-4 z-50 flex items-center gap-2.5 px-4 py-3 rounded-xl border border-default shadow-lg transition-all duration-300 animate-slide-in"
+          style={{
+            backgroundColor: "var(--bg-secondary)",
+            borderLeft: `4px solid ${toast.type === "success" ? "var(--success)" : "var(--error)"}`,
+          }}
+        >
+          {toast.type === "success" ? (
+            <CheckCircle2 className="w-4 h-4 text-[var(--success)]" />
+          ) : (
+            <AlertCircle className="w-4 h-4 text-[var(--error)]" />
+          )}
+          <span className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
+            {toast.message}
+          </span>
         </div>
       )}
     </>

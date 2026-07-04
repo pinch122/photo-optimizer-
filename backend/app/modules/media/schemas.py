@@ -66,3 +66,10 @@ class SearchResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+class MediaListResponse(BaseModel):
+    items: List[MediaAssetResponse]
+    total: int
+    limit: int
+    offset: int
+

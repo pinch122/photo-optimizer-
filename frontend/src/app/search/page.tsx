@@ -7,7 +7,7 @@ import { formatFileSize, scoreToPercent } from "@/lib/utils";
 import PageHeader from "@/components/layout/PageHeader";
 import StatusBadge from "@/components/shared/StatusBadge";
 import Link from "next/link";
-import { Search as SearchIcon, Loader2, Clock } from "lucide-react";
+import { Search as SearchIcon, Loader2, Clock, Trash2, History } from "lucide-react";
 import { useSearchParams, useRouter } from "next/navigation";
 
 const examplePrompts = ["sunset", "beach", "food", "mountains", "dog", "car", "flowers", "city"];
@@ -16,19 +16,56 @@ function SearchContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
+  
   const initialQuery = searchParams.get("q") || "";
   const [query, setQuery] = useState(initialQuery);
   const [searchQuery, setSearchQuery] = useState(initialQuery);
   const [startTime, setStartTime] = useState<number | null>(null);
   const [latency, setLatency] = useState<number | null>(null);
+  const [recentSearches, setRecentSearches] = useState<string[]>([]);
 
-  const { data, isLoading, isFetching } = useQuery({
+  // Load history from localStorage on mount
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("photomind_recent_searches");
+      if (stored) {
+        setRecentSearches(JSON.parse(stored));
+      }
+    } catch (e) {
+      console.error("Failed to load search history", e);
+    }
+  }, []);
+
+  const saveSearchToHistory = useCallback((term: string) => {
+    if (!term) return;
+    setRecentSearches((prev) => {
+      const next = [term, ...prev.filter((t) => t !== term)].slice(0, 5);
+      try {
+        localStorage.setItem("photomind_recent_searches", JSON.stringify(next));
+      } catch (e) {
+        console.error("Failed to save search history", e);
+      }
+      return next;
+    });
+  }, []);
+
+  const clearHistory = () => {
+    setRecentSearches([]);
+    try {
+      localStorage.removeItem("photomind_recent_searches");
+    } catch (e) {
+      console.error("Failed to clear search history", e);
+    }
+  };
+
+  const { data, isLoading, isFetching, isError } = useQuery({
     queryKey: ["search", searchQuery],
     queryFn: async () => {
       const start = performance.now();
       setStartTime(start);
       const result = await searchMedia(searchQuery, 24, 0);
       setLatency(Math.round(performance.now() - start));
+      saveSearchToHistory(searchQuery);
       return result;
     },
     enabled: searchQuery.length > 0,
@@ -49,6 +86,15 @@ function SearchContent() {
       inputRef.current?.blur();
     }
   };
+
+  // Sync state with URL parameter changes
+  const urlQuery = searchParams.get("q");
+  useEffect(() => {
+    if (urlQuery !== null && urlQuery !== searchQuery) {
+      setQuery(urlQuery);
+      setSearchQuery(urlQuery);
+    }
+  }, [urlQuery, searchQuery]);
 
   // Global ⌘K shortcut
   useEffect(() => {
@@ -108,25 +154,60 @@ function SearchContent() {
           </div>
         </div>
 
-        {/* Example Prompts */}
-        {!searchQuery && (
+        {/* Recent Searches History */}
+        {recentSearches.length > 0 && (
           <div className="flex flex-wrap items-center justify-center gap-2 mt-4 max-w-2xl mx-auto">
-            <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>Try:</span>
-            {examplePrompts.map((prompt) => (
+            <span className="text-xs flex items-center gap-1" style={{ color: "var(--text-tertiary)" }}>
+              <History className="w-3.5 h-3.5" /> Recent:
+            </span>
+            {recentSearches.map((term) => (
               <button
-                key={prompt}
-                onClick={() => { setQuery(prompt); setSearchQuery(prompt); router.push(`/search?q=${prompt}`, { scroll: false }); }}
-                className="px-3 py-1 rounded-full text-xs font-medium border border-default transition-colors duration-150 hover:border-brand/50 hover:text-brand"
+                key={term}
+                onClick={() => {
+                  setQuery(term);
+                  setSearchQuery(term);
+                  router.push(`/search?q=${encodeURIComponent(term)}`, { scroll: false });
+                }}
+                className="px-2.5 py-1 rounded-md text-[11px] font-medium border border-default transition-colors duration-150 hover:border-brand/40 hover:text-brand"
                 style={{
                   backgroundColor: "var(--bg-secondary)",
                   color: "var(--text-secondary)",
                 }}
               >
-                {prompt}
+                {term}
               </button>
             ))}
+            <button
+              onClick={clearHistory}
+              className="p-1 rounded-md hover:bg-[var(--bg-tertiary)] hover:text-red-400 transition-colors"
+              title="Clear history"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-zinc-500" />
+            </button>
           </div>
         )}
+
+        {/* Example Prompts */}
+        <div className="flex flex-wrap items-center justify-center gap-2 mt-4 max-w-2xl mx-auto">
+          <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>Examples:</span>
+          {examplePrompts.map((prompt) => (
+            <button
+              key={prompt}
+              onClick={() => {
+                setQuery(prompt);
+                setSearchQuery(prompt);
+                router.push(`/search?q=${encodeURIComponent(prompt)}`, { scroll: false });
+              }}
+              className="px-3 py-1 rounded-full text-xs font-medium border border-default transition-colors duration-150 hover:border-brand/50 hover:text-brand"
+              style={{
+                backgroundColor: "var(--bg-secondary)",
+                color: "var(--text-secondary)",
+              }}
+            >
+              {prompt}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Search Meta */}
@@ -164,8 +245,26 @@ function SearchContent() {
         </div>
       )}
 
+      {/* Error state */}
+      {isError && (
+        <div className="text-center py-12 max-w-md mx-auto">
+          <p className="text-sm font-semibold" style={{ color: "var(--error)" }}>
+            Search Engine connection failure
+          </p>
+          <p className="text-xs mt-1" style={{ color: "var(--text-tertiary)" }}>
+            Verify Qdrant is healthy and query model is initialized.
+          </p>
+          <button
+            onClick={() => handleSearch()}
+            className="mt-4 px-3.5 py-2 rounded-md text-xs font-semibold text-white bg-brand hover:bg-brand-hover"
+          >
+            Retry Search
+          </button>
+        </div>
+      )}
+
       {/* Results Grid */}
-      {data && data.items.length > 0 && (
+      {data && data.items.length > 0 && !isError && (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
           {data.items.map((item) => {
             const percent = scoreToPercent(item.score);
@@ -184,6 +283,16 @@ function SearchContent() {
                     className="w-full h-full object-cover transition-opacity duration-300"
                     loading="lazy"
                   />
+                  {/* Similarity score badge */}
+                  <span
+                    className="absolute top-2 right-2 z-10 px-2 py-0.5 rounded text-[10px] font-bold shadow-sm"
+                    style={{
+                      backgroundColor: percent >= 80 ? "var(--success)" : percent >= 60 ? "var(--accent-primary)" : "var(--text-tertiary)",
+                      color: "white",
+                    }}
+                  >
+                    {percent}% Match
+                  </span>
                 </div>
                 <div className="p-3">
                   <p className="text-xs font-medium truncate" style={{ color: "var(--text-primary)" }}>
@@ -204,11 +313,8 @@ function SearchContent() {
                         }}
                       />
                     </div>
-                    <span className="text-[11px] font-mono font-medium flex-shrink-0" style={{ color: "var(--text-secondary)" }}>
-                      {percent}%
-                    </span>
                   </div>
-                  <div className="flex items-center justify-between mt-1.5">
+                  <div className="flex items-center justify-between mt-2">
                     <span className="text-[10px]" style={{ color: "var(--text-tertiary)" }}>
                       {formatFileSize(item.file_size)}
                     </span>
@@ -222,13 +328,13 @@ function SearchContent() {
       )}
 
       {/* No Results */}
-      {data && data.items.length === 0 && searchQuery && (
+      {data && data.items.length === 0 && searchQuery && !isLoading && !isError && (
         <div className="text-center py-16">
           <p className="text-base font-medium" style={{ color: "var(--text-primary)" }}>
             No photos match this description
           </p>
           <p className="text-sm mt-1" style={{ color: "var(--text-tertiary)" }}>
-            Try different words or upload more photos
+            Try different keywords or upload more photos
           </p>
         </div>
       )}

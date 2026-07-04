@@ -63,3 +63,11 @@ export interface SearchResponse {
 export interface HealthResponse {
   status: string;
 }
+
+export interface MediaListResponse {
+  items: MediaAsset[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+

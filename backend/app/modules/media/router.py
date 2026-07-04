@@ -9,7 +9,7 @@ from sqlalchemy import select, delete
 from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.modules.media.models import MediaAsset, PhotoMetadata, MediaEmbedding, AssetStatus
-from app.modules.media.schemas import UploadResponse, MediaAssetResponse, StatusResponse, SearchResponse
+from app.modules.media.schemas import UploadResponse, MediaAssetResponse, StatusResponse, SearchResponse, MediaListResponse
 from app.modules.media.services.upload_service import UploadService, DuplicateAssetError
 from app.modules.media.services.storage_service import StorageService
 from app.modules.media.services.search_service import SearchService
@@ -238,3 +238,37 @@ async def serve_media_file(
         media_type=response_mime,
         filename=response_name
     )
+
+@router.get("", response_model=MediaListResponse)
+async def list_media(
+    limit: int = Query(30, ge=1, le=100, description="Limit for pagination"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get paginated media assets from the database.
+    """
+    from sqlalchemy import func
+    # Count total assets
+    count_stmt = select(func.count(MediaAsset.id))
+    count_result = await db.execute(count_stmt)
+    total = count_result.scalar() or 0
+
+    # Retrieve assets with metadata
+    stmt = (
+        select(MediaAsset)
+        .options(selectinload(MediaAsset.photo_metadata))
+        .order_by(MediaAsset.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    result = await db.execute(stmt)
+    items = result.scalars().all()
+
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset
+    }
+

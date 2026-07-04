@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 
 const mobileNavItems = [
-  { href: "/", label: "Home", icon: LayoutDashboard },
+  { href: "/dashboard", label: "Home", icon: LayoutDashboard },
   { href: "/gallery", label: "Gallery", icon: Image },
   { href: "/upload", label: "Upload", icon: Upload },
   { href: "/search", label: "Search", icon: Search },
@@ -30,8 +30,8 @@ export default function MobileNav() {
       <div className="flex items-center justify-around h-14">
         {mobileNavItems.map((item) => {
           const isActive =
-            item.href === "/"
-              ? pathname === "/"
+            item.href === "/dashboard"
+              ? pathname === "/dashboard"
               : pathname.startsWith(item.href);
 
           return (

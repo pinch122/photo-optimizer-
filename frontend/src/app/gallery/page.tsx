@@ -2,12 +2,12 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { searchMedia, getThumbnailUrl } from "@/lib/api";
-import { formatFileSize, formatRelativeTime } from "@/lib/utils";
+import { listMedia, getThumbnailUrl } from "@/lib/api";
+import { formatFileSize, formatDate } from "@/lib/utils";
 import PageHeader from "@/components/layout/PageHeader";
 import StatusBadge from "@/components/shared/StatusBadge";
 import Link from "next/link";
-import { Filter, ArrowUpDown, CheckSquare, Square, Loader2 } from "lucide-react";
+import { CheckSquare, Square, Loader2 } from "lucide-react";
 import type { AssetStatus } from "@/lib/types";
 
 type SortBy = "newest" | "oldest" | "largest" | "name";
@@ -23,9 +23,10 @@ export default function GalleryPage() {
   const observerRef = useRef<HTMLDivElement>(null);
   const limit = 30;
 
+  // Use the dedicated listMedia endpoint instead of broad search
   const { data, isLoading, isFetching } = useQuery({
     queryKey: ["gallery", offset],
-    queryFn: () => searchMedia("photo", limit, offset),
+    queryFn: () => listMedia(limit, offset),
   });
 
   // Accumulate items for infinite scroll
@@ -72,11 +73,16 @@ export default function GalleryPage() {
   }
   filtered = [...filtered].sort((a, b) => {
     switch (sortBy) {
-      case "newest": return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-      case "oldest": return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-      case "largest": return b.file_size - a.file_size;
-      case "name": return a.filename.localeCompare(b.filename);
-      default: return 0;
+      case "newest":
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      case "oldest":
+        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+      case "largest":
+        return b.file_size - a.file_size;
+      case "name":
+        return a.filename.localeCompare(b.filename);
+      default:
+        return 0;
     }
   });
 
@@ -115,9 +121,14 @@ export default function GalleryPage() {
 
             {/* Select Toggle */}
             <button
-              onClick={() => { setSelectMode(!selectMode); setSelected(new Set()); }}
+              onClick={() => {
+                setSelectMode(!selectMode);
+                setSelected(new Set());
+              }}
               className={`h-8 px-3 rounded-md border text-xs font-medium transition-colors duration-150 ${
-                selectMode ? "border-brand text-brand bg-brand/10" : "border-default hover:border-[var(--border-subtle)]"
+                selectMode
+                  ? "border-brand text-brand bg-brand/10"
+                  : "border-default hover:border-[var(--border-subtle)]"
               }`}
               style={{ color: selectMode ? undefined : "var(--text-secondary)" }}
             >
@@ -136,8 +147,12 @@ export default function GalleryPage() {
         </div>
       ) : filtered.length === 0 ? (
         <div className="text-center py-16">
-          <p className="text-base font-medium" style={{ color: "var(--text-primary)" }}>No photos yet</p>
-          <p className="text-sm mt-1" style={{ color: "var(--text-tertiary)" }}>Upload your first photos to get started</p>
+          <p className="text-base font-medium" style={{ color: "var(--text-primary)" }}>
+            No photos yet
+          </p>
+          <p className="text-sm mt-1" style={{ color: "var(--text-tertiary)" }}>
+            Upload your first photos to get started
+          </p>
           <Link
             href="/upload"
             className="inline-flex items-center gap-2 mt-4 px-4 py-2 rounded-md text-sm font-medium text-white bg-brand hover:bg-brand-hover transition-colors"
@@ -153,14 +168,14 @@ export default function GalleryPage() {
               return (
                 <div
                   key={item.id}
-                  className={`group relative aspect-square rounded-lg overflow-hidden border transition-all duration-200 hover:shadow-md hover:scale-[1.02] ${
+                  className={`group relative aspect-square rounded-lg overflow-hidden border transition-all duration-200 hover:shadow-md hover:scale-[1.02] cursor-pointer ${
                     isSelected ? "border-brand ring-2 ring-brand/30" : "border-default"
                   }`}
                   style={{ backgroundColor: "var(--bg-tertiary)" }}
                   onClick={() => selectMode && toggleSelect(item.id)}
                 >
                   {selectMode ? (
-                    <button className="absolute top-2 left-2 z-10">
+                    <button className="absolute top-2 left-2 z-10" aria-label="Select photo">
                       {isSelected ? (
                         <CheckSquare className="w-5 h-5 text-brand" />
                       ) : (
@@ -177,12 +192,12 @@ export default function GalleryPage() {
                     className="w-full h-full object-cover"
                     loading="lazy"
                   />
-                  {/* Hover overlay */}
-                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-all duration-200 flex items-end pointer-events-none">
-                    <div className="w-full p-2 translate-y-full group-hover:translate-y-0 transition-transform duration-200">
+                  {/* Hover overlay details */}
+                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/45 transition-all duration-200 flex items-end pointer-events-none">
+                    <div className="w-full p-2 translate-y-full group-hover:translate-y-0 transition-transform duration-200 bg-gradient-to-t from-black/80 to-transparent">
                       <p className="text-[11px] font-medium text-white truncate">{item.filename}</p>
                       <div className="flex items-center justify-between mt-0.5">
-                        <span className="text-[10px] text-zinc-300">{formatFileSize(item.file_size)}</span>
+                        <span className="text-[9px] text-zinc-300">{formatDate(item.created_at)}</span>
                         <StatusBadge status={item.status} />
                       </div>
                     </div>

@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-07-04
+
+### Added
+* **Modern AI Landing Page**: Centralized hero landing page with natural language search, example chip suggestions, and automated redirect triggers for empty libraries.
+* **Full-featured Upload Engine**: Added drag-and-drop support, multiple file ingest queues, active progress bar indicators, status polling, duplicate (409) detections, and clean success/failure notification toasts.
+* **Unified Gallery View**: Responsive image grid displaying thumbnails, filenames, dates, and indexing statuses, supporting infinite scrolling via Intersection Observers.
+* **Detailed Asset Inspector**: Renders original full resolution media, calculated dimension resolutions, database types, processing timelines, and similarity scores.
+* **Persistent Search Engine**: Integrated local history logs for quick query retrieval, query latency counters, and gradient score badges.
+* **Backend Media Ingestion**: Added a paginated listing API (`GET /api/media`) to retrieve assets directly from PostgreSQL.
+
+---
+
 ## [0.3.1] - 2026-07-01
 
 ### Fixed

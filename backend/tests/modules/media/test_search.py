@@ -121,3 +121,21 @@ async def test_search_validation_failures(async_client: AsyncClient):
     # Invalid offset (negative)
     res = await async_client.get("/api/media/search?q=test&offset=-1")
     assert res.status_code == 422
+
+@pytest.mark.asyncio
+async def test_paginated_list_media_success(async_client: AsyncClient):
+    """
+    Verifies the newly implemented GET /api/media listing endpoint.
+    """
+    res = await async_client.get("/api/media?limit=5&offset=0")
+    assert res.status_code == 200
+    
+    data = res.json()
+    assert "items" in data
+    assert "total" in data
+    assert "limit" in data
+    assert "offset" in data
+    assert data["limit"] == 5
+    assert data["offset"] == 0
+    assert isinstance(data["items"], list)
+

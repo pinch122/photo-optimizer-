@@ -5,7 +5,9 @@ import type {
   StatusResponse,
   SearchResponse,
   HealthResponse,
+  MediaListResponse,
 } from "./types";
+
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -53,6 +55,16 @@ export async function searchMedia(
 ): Promise<SearchResponse> {
   const { data } = await api.get<SearchResponse>("/media/search", {
     params: { q: query, limit, offset },
+  });
+  return data;
+}
+
+export async function listMedia(
+  limit: number = 30,
+  offset: number = 0
+): Promise<MediaListResponse> {
+  const { data } = await api.get<MediaListResponse>("/media", {
+    params: { limit, offset },
   });
   return data;
 }

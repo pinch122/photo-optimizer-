@@ -106,9 +106,13 @@ export default function MediaDetailPage() {
           {/* File Info */}
           <MetadataSection title="File Information" icon={FileImage}>
             <MetadataRow label="Name" value={asset.filename} />
-            <MetadataRow label="Type" value={asset.mime_type} mono />
+            <MetadataRow label="Mime Type" value={asset.mime_type} mono />
+            <MetadataRow label="Media Type" value={asset.media_type} />
             <MetadataRow label="Size" value={formatFileSize(asset.file_size)} />
             <MetadataRow label="Status" value={<StatusBadge status={asset.status} />} />
+            {typeof (asset as any).score === "number" && (
+              <MetadataRow label="Similarity Score" value={`${Math.round((asset as any).score * 100)}%`} />
+            )}
             <MetadataRow label="Uploaded" value={formatDate(asset.created_at)} />
             {asset.taken_at && <MetadataRow label="Taken" value={formatDate(asset.taken_at)} />}
           </MetadataSection>
