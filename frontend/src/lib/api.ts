@@ -69,6 +69,11 @@ export async function listMedia(
   return data;
 }
 
+export async function deleteMedia(id: string): Promise<{ message: string }> {
+  const { data } = await api.delete<{ message: string }>(`/media/${id}`);
+  return data;
+}
+
 // ─── File URLs ─────────────────────────────────────────────────────
 export function getThumbnailUrl(id: string): string {
   return `${API_BASE_URL}/api/media/${id}/file?size=thumbnail`;

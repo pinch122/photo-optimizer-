@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-07-04
+
+### Added
+* **Delete Media Feature**: Enabled full end-to-end deletion of uploaded photos via a new `DELETE /api/media/{id}` route, transactional database cascades, file storage disk deletions, and Qdrant vector index removals.
+* **Gallery Deletion Interface**: Added a Trash icon trigger overlay in the top-right corner of Gallery photo cards, a custom confirmation dialog, loading spinners, state updates, and toast notifications.
+
+### Optimized
+* **Backend Build Context**: Created `backend/.dockerignore` to filter out local virtual environment cache directories, reducing the backend Docker build context from ~600 MB to **313 kB** (a **99.95%** size compression).
+
+---
+
 ## [0.4.1] - 2026-07-04
 
 ### Optimized

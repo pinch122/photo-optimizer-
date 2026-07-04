@@ -1,18 +1,19 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { listMedia, getThumbnailUrl } from "@/lib/api";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { listMedia, getThumbnailUrl, deleteMedia } from "@/lib/api";
 import { formatFileSize, formatDate } from "@/lib/utils";
 import PageHeader from "@/components/layout/PageHeader";
 import StatusBadge from "@/components/shared/StatusBadge";
 import Link from "next/link";
-import { CheckSquare, Square, Loader2 } from "lucide-react";
+import { CheckSquare, Square, Loader2, Trash2, CheckCircle2, AlertCircle } from "lucide-react";
 import type { AssetStatus } from "@/lib/types";
 
 type SortBy = "newest" | "oldest" | "largest" | "name";
 
 export default function GalleryPage() {
+  const queryClient = useQueryClient();
   const [statusFilter, setStatusFilter] = useState<AssetStatus | "ALL">("ALL");
   const [sortBy, setSortBy] = useState<SortBy>("newest");
   const [selectMode, setSelectMode] = useState(false);
@@ -20,8 +21,19 @@ export default function GalleryPage() {
   const [allItems, setAllItems] = useState<any[]>([]);
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(true);
+  const [photoToDelete, setPhotoToDelete] = useState<any | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
   const observerRef = useRef<HTMLDivElement>(null);
   const limit = 30;
+
+  // Auto-dismiss toast
+  useEffect(() => {
+    if (toast) {
+      const timer = setTimeout(() => setToast(null), 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [toast]);
 
   // Use the dedicated listMedia endpoint instead of broad search
   const { data, isLoading, isFetching } = useQuery({
@@ -64,6 +76,28 @@ export default function GalleryPage() {
       else next.add(id);
       return next;
     });
+  };
+
+  const handleDelete = async () => {
+    if (!photoToDelete) return;
+    setIsDeleting(true);
+    try {
+      await deleteMedia(photoToDelete.id);
+      
+      // Remove immediately from UI state
+      setAllItems((prev) => prev.filter((item) => item.id !== photoToDelete.id));
+      setToast({ message: "Photo deleted successfully.", type: "success" });
+      setPhotoToDelete(null);
+
+      // Invalidate queries to refresh lists
+      queryClient.invalidateQueries({ queryKey: ["gallery"] });
+      queryClient.invalidateQueries({ queryKey: ["recent-uploads"] });
+    } catch (err: any) {
+      const msg = err.response?.data?.detail || err.message || "Failed to delete photo.";
+      setToast({ message: `Failed to delete photo: ${msg}`, type: "error" });
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   // Filter and sort
@@ -183,7 +217,22 @@ export default function GalleryPage() {
                       )}
                     </button>
                   ) : (
-                    <Link href={`/media/${item.id}`} className="absolute inset-0 z-10" />
+                    <>
+                      <Link href={`/media/${item.id}`} className="absolute inset-0 z-10" />
+                      {/* Trash Delete button on hover */}
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setPhotoToDelete(item);
+                        }}
+                        className="absolute top-2 right-2 z-20 p-1.5 rounded-md bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity duration-155 hover:bg-red-600 hover:text-white"
+                        title="Delete photo"
+                        aria-label="Delete photo"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </>
                   )}
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
@@ -231,6 +280,87 @@ export default function GalleryPage() {
           <button className="px-3 py-1 rounded-md text-xs font-medium bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors">
             Delete
           </button>
+        </div>
+      )}
+
+      {/* Delete Confirmation Dialog */}
+      {photoToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm transition-opacity duration-200">
+          <div
+            className="w-full max-w-md rounded-xl border border-default p-6 shadow-lg transform transition-all duration-200 scale-100"
+            style={{ backgroundColor: "var(--bg-secondary)" }}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-dialog-title"
+          >
+            <h3
+              id="delete-dialog-title"
+              className="text-lg font-semibold tracking-tight mb-2"
+              style={{ color: "var(--text-primary)" }}
+            >
+              Delete Photo?
+            </h3>
+            <p className="text-sm mb-4" style={{ color: "var(--text-secondary)" }}>
+              Are you sure you want to permanently delete this photo?
+            </p>
+            
+            <div
+              className="p-3 rounded-lg text-xs space-y-1.5 mb-6 border border-default"
+              style={{ backgroundColor: "var(--bg-primary)", color: "var(--text-secondary)" }}
+            >
+              <p className="font-semibold" style={{ color: "var(--text-primary)" }}>
+                This action will also remove:
+              </p>
+              <ul className="list-disc pl-4 space-y-0.5" style={{ color: "var(--text-secondary)" }}>
+                <li>Original image file</li>
+                <li>Generated thumbnail</li>
+                <li>Extracted metadata (EXIF)</li>
+                <li>AI vector embedding</li>
+              </ul>
+            </div>
+
+            <div className="flex items-center justify-end gap-3">
+              <button
+                disabled={isDeleting}
+                onClick={() => setPhotoToDelete(null)}
+                className="px-4 py-2 rounded-lg text-sm font-medium border border-default hover:bg-[var(--bg-tertiary)] transition-colors disabled:opacity-50"
+                style={{ color: "var(--text-secondary)" }}
+              >
+                Cancel
+              </button>
+              <button
+                disabled={isDeleting}
+                onClick={handleDelete}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-white bg-red-600 hover:bg-red-700 transition-colors disabled:opacity-50 min-w-[80px]"
+              >
+                {isDeleting ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  "Delete"
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Floating Toast Notification */}
+      {toast && (
+        <div
+          className="fixed bottom-20 right-4 z-50 flex items-center gap-2.5 px-4 py-3 rounded-xl border border-default shadow-lg transition-all duration-300"
+          style={{
+            backgroundColor: "var(--bg-secondary)",
+            borderLeft: `4px solid ${toast.type === "success" ? "var(--success)" : "var(--error)"}`,
+          }}
+        >
+          {toast.type === "success" ? (
+            <CheckCircle2 className="w-4 h-4 text-[var(--success)]" />
+          ) : (
+            <AlertCircle className="w-4 h-4 text-[var(--error)]" />
+          )}
+          <span className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
+            {toast.message}
+          </span>
         </div>
       )}
     </>

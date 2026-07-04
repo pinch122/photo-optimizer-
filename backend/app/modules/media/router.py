@@ -13,6 +13,7 @@ from app.modules.media.schemas import UploadResponse, MediaAssetResponse, Status
 from app.modules.media.services.upload_service import UploadService, DuplicateAssetError
 from app.modules.media.services.storage_service import StorageService
 from app.modules.media.services.search_service import SearchService
+from app.modules.media.services.delete_service import DeleteService
 from app.modules.media.worker import process_media_task
 from app.logging_config import logger
 
@@ -271,4 +272,30 @@ async def list_media(
         "limit": limit,
         "offset": offset
     }
+
+@router.delete("/{id}", status_code=status.HTTP_200_OK)
+async def delete_media(
+    id: uuid.UUID,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    HTTP DELETE endpoint to remove a media asset, its files on disk, and Qdrant embeddings.
+    """
+    try:
+        success = await DeleteService.delete_media(db=db, asset_id=id)
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Media asset not found."
+            )
+        return {"message": "Media deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Delete Router: Unexpected failure during deletion of asset [{id}]: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete media asset from backend repository."
+        )
+
 

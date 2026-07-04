@@ -139,3 +139,38 @@ async def test_paginated_list_media_success(async_client: AsyncClient):
     assert data["offset"] == 0
     assert isinstance(data["items"], list)
 
+@pytest.mark.asyncio
+async def test_delete_media_not_found(async_client: AsyncClient):
+    """
+    Verifies HTTP 404 response on deleting non-existent asset ID.
+    """
+    random_id = uuid.uuid4()
+    res = await async_client.delete(f"/api/media/{random_id}")
+    assert res.status_code == 404
+
+@pytest.mark.asyncio
+async def test_delete_media_success(async_client: AsyncClient):
+    """
+    Verifies full deletion logic of media:
+    1. Uploads a mock image.
+    2. Deletes the media by ID.
+    3. Verifies that subsequent GET queries return 404.
+    """
+    img_data = get_mock_image_bytes(width=211, height=211)
+    res = await async_client.post(
+        "/api/media/upload",
+        files={"file": ("to_delete.jpg", img_data, "image/jpeg")}
+    )
+    assert res.status_code == 201
+    asset_id = res.json()["id"]
+
+    # Delete media
+    del_res = await async_client.delete(f"/api/media/{asset_id}")
+    assert del_res.status_code == 200
+    assert del_res.json() == {"message": "Media deleted successfully"}
+
+    # Fetch status checks should return 404
+    check_res = await async_client.get(f"/api/media/{asset_id}/status")
+    assert check_res.status_code == 404
+
+
