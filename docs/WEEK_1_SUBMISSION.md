@@ -1,4 +1,4 @@
-# Week 1 Submission — Pinchu Alok — <"E2">
+# Week 1 Submission — Pinchu Alok — E2
 
 ## 1. Project Repository
 - **GitHub Repository**: <ADD REPO LINK> (https://github.com/pinch122/photo-optimizer-.git)
