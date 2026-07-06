@@ -1,4 +1,5 @@
 import uuid
+import time
 from typing import List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -11,6 +12,25 @@ from app.logging_config import logger
 
 class SearchService:
     @classmethod
+    async def _rank_and_filter_candidates(
+        cls,
+        candidates: List[Dict[str, Any]],
+        query_text: str,
+        threshold: float
+    ) -> List[Dict[str, Any]]:
+        """
+        Ranker pipeline step. Currently filters candidates below the similarity threshold
+        and sorts them by vector cosine distance score.
+        Designed to be easily extended with LLM/Gemini ranking strategies.
+        """
+        # Filter candidates below similarity threshold
+        filtered = [c for c in candidates if c["score"] >= threshold]
+        
+        # Sort remaining by score descending
+        sorted_candidates = sorted(filtered, key=lambda x: x["score"], reverse=True)
+        return sorted_candidates
+
+    @classmethod
     async def search_media(
         cls,
         db: AsyncSession,
@@ -21,34 +41,64 @@ class SearchService:
         """
         Orchestrates semantic text searches:
         1. Encodes query text into a 512-dimension query vector.
-        2. Queries Qdrant for closest vector matches (Cosine distance).
-        3. Retrieves corresponding PostgreSQL records with eager-loaded child metadata.
-        4. Re-ranks PostgreSQL records according to descending Qdrant similarity scores.
+        2. Queries Qdrant for closest vector matches (Cosine distance, top 20 candidates).
+        3. Applies ranker pipeline (filtering by threshold and sorting).
+        4. Hydrates PostgreSQL records for the filtered slice.
         """
         if not query_text or not query_text.strip():
             raise ValueError("Query string cannot be empty.")
-            
-        # 1. Generate text embedding query vector
-        logger.info(f"Search Service: Encoding query text: '{query_text}'")
-        query_vector = await EmbeddingService.generate_text_embedding(query_text)
+
+        start_time = time.perf_counter()
         
-        # 2. Query Qdrant for matching points
-        logger.info(f"Search Service: Querying Qdrant index (limit={limit}, offset={offset})")
-        hits = QdrantService.search_vectors(
+        # 1. Generate text embedding query vector
+        logger.info(f"Search Service: Starting embedding generation for query: '{query_text}'")
+        embed_start = time.perf_counter()
+        query_vector = await EmbeddingService.generate_text_embedding(query_text)
+        embed_duration = time.perf_counter() - embed_start
+        logger.info(f"Search Service: Embedding generation complete in {embed_duration:.4f}s")
+        
+        # 2. Query Qdrant for top 20 candidate points
+        candidate_pool_size = 20
+        logger.info(f"Search Service: Retrieving Top-{candidate_pool_size} candidates from Qdrant")
+        candidates = QdrantService.search_vectors(
             vector=query_vector,
             model_name=settings.CLIP_MODEL_NAME,
-            limit=limit,
-            offset=offset
+            limit=candidate_pool_size,
+            offset=0
         )
         
-        if not hits:
-            return {"items": [], "total": 0, "limit": limit, "offset": offset}
+        # 3. Apply ranking and threshold filtering pipeline
+        threshold = settings.SEARCH_SIMILARITY_THRESHOLD
+        logger.info(f"Search Service: Running ranking and filtering with threshold: {threshold}")
+        processed_candidates = await cls._rank_and_filter_candidates(
+            candidates=candidates,
+            query_text=query_text,
+            threshold=threshold
+        )
+        
+        total_filtered = len(processed_candidates)
+        
+        # Apply pagination (limit, offset) slicing on the filtered results
+        paginated_candidates = processed_candidates[offset : offset + limit]
+        
+        if not paginated_candidates:
+            duration = time.perf_counter() - start_time
+            logger.info(
+                f"Search finished (no matches): query='{query_text}', threshold={threshold}, "
+                f"candidates={len(candidates)}, filtered={total_filtered}, time={duration:.4f}s"
+            )
+            return {
+                "items": [],
+                "total": total_filtered,
+                "limit": limit,
+                "offset": offset
+            }
             
         # Map IDs and scores
-        hit_ids = [hit["id"] for hit in hits]
-        scores_map = {hit["id"]: hit["score"] for hit in hits}
+        hit_ids = [hit["id"] for hit in paginated_candidates]
+        scores_map = {hit["id"]: hit["score"] for hit in paginated_candidates}
         
-        # 3. Eager load PostgreSQL assets matching the IDs
+        # 4. Eager load PostgreSQL assets matching the sliced IDs
         query = (
             select(MediaAsset)
             .options(selectinload(MediaAsset.photo_metadata))
@@ -59,23 +109,26 @@ class SearchService:
         assets = result.scalars().all()
         assets_map = {asset.id: asset for asset in assets}
         
-        # 4. Sort records to match Qdrant's ordering and dynamically assign scores
+        # Sort records to match the ranking pipeline ordering and dynamically assign scores
         ranked_items = []
         for hit_id in hit_ids:
             asset = assets_map.get(hit_id)
             if asset:
-                # Dynamically set score attribute for Pydantic schema validation mapping
                 asset.score = scores_map[hit_id]
                 ranked_items.append(asset)
             else:
                 logger.warning(f"Search Service: Vector match [{hit_id}] found in Qdrant but missing from PostgreSQL.")
                 
-        # Simple pagination ceiling total calculation
-        total_count = len(ranked_items) + offset
+        duration = time.perf_counter() - start_time
+        logger.info(
+            f"Search finished: query='{query_text}', threshold={threshold}, "
+            f"candidates={len(candidates)}, filtered={total_filtered}, sliced={len(ranked_items)}, "
+            f"time={duration:.4f}s"
+        )
         
         return {
             "items": ranked_items,
-            "total": total_count,
+            "total": total_filtered,
             "limit": limit,
             "offset": offset
         }

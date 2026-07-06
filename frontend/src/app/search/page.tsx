@@ -12,6 +12,13 @@ import { useSearchParams, useRouter } from "next/navigation";
 
 const examplePrompts = ["sunset", "beach", "food", "mountains", "dog", "car", "flowers", "city"];
 
+function getSimilarityLabel(score: number): string {
+  if (score >= 0.35) return "Excellent Match";
+  if (score >= 0.28) return "High Match";
+  if (score >= 0.22) return "Good Match";
+  return "Match";
+}
+
 function SearchContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -217,7 +224,7 @@ function SearchContent() {
             Results for &ldquo;<span className="font-medium" style={{ color: "var(--text-primary)" }}>{searchQuery}</span>&rdquo;
           </span>
           <span>·</span>
-          <span>{data.total} photos</span>
+          <span>{data.total} photos found</span>
           {latency !== null && (
             <>
               <span>·</span>
@@ -283,15 +290,19 @@ function SearchContent() {
                     className="w-full h-full object-cover transition-opacity duration-300"
                     loading="lazy"
                   />
-                  {/* Similarity score badge */}
+                  {/* Similarity score badge with human-readable label */}
                   <span
                     className="absolute top-2 right-2 z-10 px-2 py-0.5 rounded text-[10px] font-bold shadow-sm"
                     style={{
-                      backgroundColor: percent >= 80 ? "var(--success)" : percent >= 60 ? "var(--accent-primary)" : "var(--text-tertiary)",
+                      backgroundColor: item.score >= 0.35
+                        ? "var(--success)"
+                        : item.score >= 0.28
+                        ? "var(--accent-primary)"
+                        : "var(--text-tertiary)",
                       color: "white",
                     }}
                   >
-                    {percent}% Match
+                    {getSimilarityLabel(item.score)}
                   </span>
                 </div>
                 <div className="p-3">
@@ -316,7 +327,7 @@ function SearchContent() {
                   </div>
                   <div className="flex items-center justify-between mt-2">
                     <span className="text-[10px]" style={{ color: "var(--text-tertiary)" }}>
-                      {formatFileSize(item.file_size)}
+                      {formatFileSize(item.file_size)} • {percent}% Match
                     </span>
                     <StatusBadge status={item.status} />
                   </div>
@@ -327,15 +338,34 @@ function SearchContent() {
         </div>
       )}
 
-      {/* No Results */}
+      {/* Modern Empty State */}
       {data && data.items.length === 0 && searchQuery && !isLoading && !isError && (
-        <div className="text-center py-16">
-          <p className="text-base font-medium" style={{ color: "var(--text-primary)" }}>
-            No photos match this description
+        <div className="text-center py-16 max-w-md mx-auto">
+          <p className="text-base font-semibold" style={{ color: "var(--text-primary)" }}>
+            No relevant photos found.
           </p>
-          <p className="text-sm mt-1" style={{ color: "var(--text-tertiary)" }}>
-            Try different keywords or upload more photos
+          <p className="text-sm mt-2" style={{ color: "var(--text-tertiary)" }}>
+            Try searching for:
           </p>
+          <div className="flex flex-wrap justify-center gap-2 mt-3">
+            {["beach", "travel", "sunset", "dog"].map((example) => (
+              <button
+                key={example}
+                onClick={() => {
+                  setQuery(example);
+                  setSearchQuery(example);
+                  router.push(`/search?q=${encodeURIComponent(example)}`, { scroll: false });
+                }}
+                className="px-3.5 py-1.5 rounded-full text-xs font-medium border border-default transition-colors duration-150 hover:border-brand hover:text-brand"
+                style={{
+                  backgroundColor: "var(--bg-secondary)",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                {example}
+              </button>
+            ))}
+          </div>
         </div>
       )}
     </>
