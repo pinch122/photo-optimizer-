@@ -9,12 +9,26 @@ import { BarChart3, Database, Hourglass, Copy, ShieldAlert } from "lucide-react"
 export default function AnalyticsPage() {
   const { data } = useQuery({
     queryKey: ["analytics-data"],
-    queryFn: () => searchMedia("photo", 100, 0),
+    queryFn: () => searchMedia("photo", 50000, 0),
   });
 
   const items = data?.items || [];
   const totalPhotos = data?.total || 0;
   const totalSize = items.reduce((sum, item) => sum + item.file_size, 0);
+
+  // Group by p_hash to find duplicates
+  const pHashCounts = items.reduce((acc, item) => {
+    if (item.p_hash) {
+      acc[item.p_hash] = (acc[item.p_hash] || 0) + 1;
+    }
+    return acc;
+  }, {} as Record<string, number>);
+
+  const duplicateCount = Object.values(pHashCounts).reduce((sum, count) => {
+    return sum + (count > 1 ? count : 0);
+  }, 0);
+
+  const duplicateRate = totalPhotos > 0 ? (duplicateCount / totalPhotos) * 100 : 0;
 
   // MIME type distribution
   const mimeCounts = items.reduce((acc, item) => {
@@ -131,7 +145,7 @@ export default function AnalyticsPage() {
               <Copy className="w-5 h-5 text-yellow-500 flex-shrink-0 mt-0.5" />
               <div>
                 <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>Duplicate Rate</span>
-                <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>0%</p>
+                <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>{duplicateRate.toFixed(1)}%</p>
               </div>
             </div>
             <div className="flex items-start gap-3">

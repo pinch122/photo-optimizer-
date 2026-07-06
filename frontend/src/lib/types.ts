@@ -23,6 +23,7 @@ export interface MediaAsset {
   taken_at: string;
   created_at: string;
   photo_metadata: PhotoMetadata | null;
+  p_hash: string | null;
 }
 
 export interface UploadResponse {
@@ -51,6 +52,7 @@ export interface SearchResult {
   created_at: string;
   score: number;
   photo_metadata: PhotoMetadata | null;
+  p_hash: string | null;
 }
 
 export interface SearchResponse {

@@ -17,6 +17,12 @@ export default function DashboardPage() {
     queryFn: () => listMedia(6, 0),
   });
 
+  // Fetch all media to compute full library statistics (storage size, ready rate)
+  const { data: fullMediaData } = useQuery({
+    queryKey: ["full-library-stats"],
+    queryFn: () => listMedia(50000, 0),
+  });
+
   // Fetch health status
   const { data: healthData } = useQuery({
     queryKey: ["health"],
@@ -24,12 +30,12 @@ export default function DashboardPage() {
     refetchInterval: 30000,
   });
 
-  // Derive stats from backend database
+  // Derive stats from backend database (reflecting the full library)
   const totalPhotos = mediaData?.total ?? 0;
-  const totalSize = mediaData?.items?.reduce((sum, item) => sum + item.file_size, 0) ?? 0;
-  const readyCount = mediaData?.items?.filter((i) => i.status === "READY").length ?? 0;
-  const readyRate = mediaData?.items?.length
-    ? Math.round((readyCount / mediaData.items.length) * 100)
+  const totalSize = fullMediaData?.items?.reduce((sum, item) => sum + item.file_size, 0) ?? 0;
+  const readyCount = fullMediaData?.items?.filter((i) => i.status === "READY").length ?? 0;
+  const readyRate = fullMediaData?.items?.length
+    ? Math.round((readyCount / fullMediaData.items.length) * 100)
     : 0;
 
   return (

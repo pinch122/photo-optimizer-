@@ -29,6 +29,7 @@ class MediaAssetResponse(BaseModel):
     taken_at: datetime
     created_at: datetime
     photo_metadata: Optional[PhotoMetadataResponse] = None
+    p_hash: Optional[str] = None
 
 class UploadResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -61,6 +62,7 @@ class SearchResultResponse(BaseModel):
     score: float
     explanation: Optional[List[str]] = None
     photo_metadata: Optional[PhotoMetadataResponse] = None
+    p_hash: Optional[str] = None
 
 
 class SearchResponse(BaseModel):

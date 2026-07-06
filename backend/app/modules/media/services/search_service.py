@@ -2,7 +2,7 @@ import uuid
 import time
 from typing import List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from app.config import settings
 from app.modules.media.models import MediaAsset
@@ -69,6 +69,39 @@ class SearchService:
         if not query_text or not query_text.strip():
             raise ValueError("Query string cannot be empty.")
 
+        # Special bypass for full-library analytics queries using keyword "photo"
+        if query_text.lower() == "photo":
+            logger.info("Search Service: Bypassing Qdrant search for special query 'photo'")
+            
+            # Count total assets
+            total_stmt = select(func.count(MediaAsset.id))
+            total_result = await db.execute(total_stmt)
+            total_filtered = total_result.scalar() or 0
+            
+            # Retrieve all assets with eager loaded metadata and AI analysis
+            query = (
+                select(MediaAsset)
+                .options(
+                    selectinload(MediaAsset.photo_metadata),
+                    selectinload(MediaAsset.ai_analysis)
+                )
+                .order_by(MediaAsset.created_at.desc())
+            )
+            result = await db.execute(query)
+            ranked_items = result.scalars().all()
+            
+            # Populate scores as 1.0
+            for item in ranked_items:
+                item.score = 1.0
+                item.explanation = None
+                
+            return {
+                "items": ranked_items,
+                "total": total_filtered,
+                "limit": len(ranked_items),
+                "offset": 0
+            }
+
         start_time = time.perf_counter()
         
         # 1. Generate text embedding query vector
@@ -122,7 +155,10 @@ class SearchService:
         # 4. Eager load PostgreSQL assets matching the sliced IDs
         query = (
             select(MediaAsset)
-            .options(selectinload(MediaAsset.photo_metadata))
+            .options(
+                selectinload(MediaAsset.photo_metadata),
+                selectinload(MediaAsset.ai_analysis)
+            )
             .where(MediaAsset.id.in_(hit_ids))
         )
         

@@ -52,6 +52,12 @@ class MediaAsset(Base):
         uselist=False
     )
 
+    @property
+    def p_hash(self) -> Optional[str]:
+        if self.ai_analysis and self.ai_analysis.keywords:
+            return self.ai_analysis.keywords.get("p_hash")
+        return None
+
 class PhotoMetadata(Base):
     __tablename__ = "photo_metadata"
 

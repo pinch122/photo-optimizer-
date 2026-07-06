@@ -258,7 +258,10 @@ async def list_media(
     # Retrieve assets with metadata
     stmt = (
         select(MediaAsset)
-        .options(selectinload(MediaAsset.photo_metadata))
+        .options(
+            selectinload(MediaAsset.photo_metadata),
+            selectinload(MediaAsset.ai_analysis)
+        )
         .order_by(MediaAsset.created_at.desc())
         .limit(limit)
         .offset(offset)
