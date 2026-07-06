@@ -327,7 +327,7 @@ function SearchContent() {
                   </div>
                   <div className="flex items-center justify-between mt-2">
                     <span className="text-[10px]" style={{ color: "var(--text-tertiary)" }}>
-                      {formatFileSize(item.file_size)} • {percent}% Match
+                      {formatFileSize(item.file_size)} • Similarity: {item.score.toFixed(3)}
                     </span>
                     <StatusBadge status={item.status} />
                   </div>

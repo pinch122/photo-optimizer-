@@ -59,7 +59,9 @@ class SearchResultResponse(BaseModel):
     taken_at: datetime
     created_at: datetime
     score: float
+    explanation: Optional[List[str]] = None
     photo_metadata: Optional[PhotoMetadataResponse] = None
+
 
 class SearchResponse(BaseModel):
     items: List[SearchResultResponse]

@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 from typing import Optional, List
-from sqlalchemy import Column, String, Integer, BigInteger, Boolean, DateTime, Enum, ForeignKey, Float, UniqueConstraint
+from sqlalchemy import Column, String, Integer, BigInteger, Boolean, DateTime, Enum, ForeignKey, Float, UniqueConstraint, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
@@ -45,6 +45,11 @@ class MediaAsset(Base):
     embeddings: Mapped[List["MediaEmbedding"]] = relationship(
         back_populates="media_asset",
         cascade="all, delete-orphan"
+    )
+    ai_analysis: Mapped[Optional["ImageAIAnalysis"]] = relationship(
+        back_populates="media_asset",
+        cascade="all, delete-orphan",
+        uselist=False
     )
 
 class PhotoMetadata(Base):
@@ -92,3 +97,34 @@ class MediaEmbedding(Base):
     __table_args__ = (
         UniqueConstraint("media_asset_id", "model_name", name="uq_asset_model"),
     )
+
+class ImageAIAnalysis(Base):
+    __tablename__ = "image_ai_analysis"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    media_asset_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("media_assets.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False
+    )
+    
+    caption: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    objects: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True)
+    scene: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    activities: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True)
+    mood: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    keywords: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True)
+    is_indoor: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    weather: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    season: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    estimated_location: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    ai_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    gemini_model_version: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    analysis_timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), 
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
+
+    # Back-reference
+    media_asset: Mapped["MediaAsset"] = relationship(back_populates="ai_analysis")

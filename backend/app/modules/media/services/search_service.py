@@ -21,12 +21,33 @@ class SearchService:
         """
         Ranker pipeline step. Currently filters candidates below the similarity threshold
         and sorts them by vector cosine distance score.
-        Designed to be easily extended with LLM/Gemini ranking strategies.
+        
+        ========================================================================
+        FUTURE RERANKING ARCHITECTURE
+        ========================================================================
+        When integrating richer AI models, this pipeline should evolve as:
+        
+        Retrieve Candidates (from Qdrant)
+        ↓
+        Threshold Filter (remove extremely low matches early)
+        ↓
+        [TODO: Future Gemini Reranker - re-evaluate top candidates using Gemini Vision LLM]
+        ↓
+        [TODO: Future Metadata Boost - boost scores based on EXIF/GPS/Date matching]
+        ↓
+        Return Re-ranked Results
+        ========================================================================
         """
-        # Filter candidates below similarity threshold
+        # Step 1: Threshold Filter
         filtered = [c for c in candidates if c["score"] >= threshold]
         
-        # Sort remaining by score descending
+        # TODO: Future Gemini Reranker will be plugged in here.
+        # e.g., filtered = await GeminiReranker.rerank(filtered, query_text)
+        
+        # TODO: Future Metadata Boost will be plugged in here.
+        # e.g., filtered = await MetadataBooster.apply_boosts(filtered, query_text)
+        
+        # Step 2: Sort remaining by score descending
         sorted_candidates = sorted(filtered, key=lambda x: x["score"], reverse=True)
         return sorted_candidates
 
@@ -41,7 +62,7 @@ class SearchService:
         """
         Orchestrates semantic text searches:
         1. Encodes query text into a 512-dimension query vector.
-        2. Queries Qdrant for closest vector matches (Cosine distance, top 20 candidates).
+        2. Queries Qdrant for closest vector matches (Cosine distance, top SEARCH_CANDIDATE_LIMIT candidates).
         3. Applies ranker pipeline (filtering by threshold and sorting).
         4. Hydrates PostgreSQL records for the filtered slice.
         """
@@ -57,8 +78,8 @@ class SearchService:
         embed_duration = time.perf_counter() - embed_start
         logger.info(f"Search Service: Embedding generation complete in {embed_duration:.4f}s")
         
-        # 2. Query Qdrant for top 20 candidate points
-        candidate_pool_size = 20
+        # 2. Query Qdrant for top candidate points (using configurable SEARCH_CANDIDATE_LIMIT)
+        candidate_pool_size = settings.SEARCH_CANDIDATE_LIMIT
         logger.info(f"Search Service: Retrieving Top-{candidate_pool_size} candidates from Qdrant")
         candidates = QdrantService.search_vectors(
             vector=query_vector,
@@ -115,6 +136,11 @@ class SearchService:
             asset = assets_map.get(hit_id)
             if asset:
                 asset.score = scores_map[hit_id]
+                
+                # TODO: Future Search Explanation generation will populate this list
+                # e.g., asset.explanation = await ExplanationGenerator.generate(asset, query_text)
+                asset.explanation = None
+                
                 ranked_items.append(asset)
             else:
                 logger.warning(f"Search Service: Vector match [{hit_id}] found in Qdrant but missing from PostgreSQL.")
