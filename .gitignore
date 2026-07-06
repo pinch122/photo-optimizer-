@@ -29,6 +29,10 @@ pg_data/
 qdrant_data/
 .qdrant/
 
+# Generated Datasets
+dataset/
+downloaded_images/
+
 # OS-specific
 .DS_Store
 Thumbs.db
