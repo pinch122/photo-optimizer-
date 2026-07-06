@@ -195,6 +195,21 @@ class DatasetIngestionPipeline:
         metadata = data["metadata"]
         quality_data = data["quality_data"]
 
+        # Convert host-based original and thumbnail paths to container-compatible paths
+        storage_base = os.path.abspath(os.environ.get("STORAGE_PATH", ""))
+        
+        orig_path = os.path.abspath(data["original_path"])
+        if storage_base and orig_path.startswith(storage_base):
+            rel = os.path.relpath(orig_path, storage_base)
+            orig_path = "/storage/" + rel.replace("\\", "/")
+            
+        thumb_path = data["thumbnail_path"]
+        if thumb_path:
+            thumb_path = os.path.abspath(thumb_path)
+            if storage_base and thumb_path.startswith(storage_base):
+                rel = os.path.relpath(thumb_path, storage_base)
+                thumb_path = "/storage/" + rel.replace("\\", "/")
+
         async with async_session() as session:
             try:
                 # 1. Index vector in Qdrant (if generated)
@@ -225,8 +240,8 @@ class DatasetIngestionPipeline:
                     file_size=data["file_size"],
                     file_hash=data["file_hash"],
                     status=AssetStatus.READY,
-                    original_path=data["original_path"],
-                    thumbnail_path=data["thumbnail_path"],
+                    original_path=orig_path,
+                    thumbnail_path=thumb_path,
                     taken_at=metadata["taken_at"] if metadata["taken_at"] else datetime.now(timezone.utc)
                 )
                 session.add(media_asset)
@@ -292,9 +307,55 @@ class DatasetIngestionPipeline:
                 StorageService.delete_file(data["thumbnail_path"])
                 return False
 
+    async def migrate_existing_paths(self) -> None:
+        """Upgrade any previously ingested Windows host paths in the database to container-compatible paths."""
+        async with async_session() as session:
+            try:
+                # Retrieve all assets and filter in Python to avoid SQL escape issues
+                query = select(MediaAsset)
+                result = await session.execute(query)
+                assets = result.scalars().all()
+                
+                assets_to_migrate = [
+                    asset for asset in assets
+                    if asset.original_path.startswith("C:") or "\\" in asset.original_path
+                ]
+                
+                if not assets_to_migrate:
+                    return
+                
+                logger.info(f"Migration: Found {len(assets_to_migrate)} assets with host paths in the database. Upgrading paths...")
+                
+                for asset in assets_to_migrate:
+                    old_orig = asset.original_path
+                    old_thumb = asset.thumbnail_path
+                    
+                    # Migrate original path
+                    if "storage" in old_orig.lower():
+                        parts = old_orig.lower().split("storage")
+                        rel_path = parts[-1].replace("\\", "/").lstrip("/")
+                        asset.original_path = f"/storage/{rel_path}"
+                        
+                    # Migrate thumbnail path
+                    if old_thumb and "storage" in old_thumb.lower():
+                        parts = old_thumb.lower().split("storage")
+                        rel_path = parts[-1].replace("\\", "/").lstrip("/")
+                        asset.thumbnail_path = f"/storage/{rel_path}"
+                        
+                    logger.info(f"Migrated [{asset.id}] paths: original={asset.original_path}, thumbnail={asset.thumbnail_path}")
+                
+                await session.commit()
+                logger.info(f"Migration: Upgraded {len(assets_to_migrate)} assets to container-compatible path format.")
+            except Exception as e:
+                logger.error(f"Migration: Failed to upgrade host paths: {e}")
+                await session.rollback()
+
     async def ingest(self) -> IngestStats:
         """Run the full ingestion pipeline across discovered files."""
         start_time = time.perf_counter()
+        
+        # Run migrations on any previous host paths
+        await self.migrate_existing_paths()
         
         # Discover images
         image_paths = self.config.discover_images()
