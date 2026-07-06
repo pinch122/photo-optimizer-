@@ -66,14 +66,24 @@ class SearchResultResponse(BaseModel):
 
 
 class SearchResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     items: List[SearchResultResponse]
     total: int
     limit: int
     offset: int
+
+
+class SimilarImageResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    image: MediaAssetResponse
+    filename: str
+    score: float
+    similarity_percentage: float
 
 class MediaListResponse(BaseModel):
     items: List[MediaAssetResponse]
     total: int
     limit: int
     offset: int
-

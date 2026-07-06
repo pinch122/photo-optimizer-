@@ -30,6 +30,16 @@ function SearchContent() {
   const [startTime, setStartTime] = useState<number | null>(null);
   const [latency, setLatency] = useState<number | null>(null);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+
+  const toggleExpanded = (id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   // Load history from localStorage on mount
   useEffect(() => {
@@ -275,14 +285,14 @@ function SearchContent() {
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
           {data.items.map((item) => {
             const percent = scoreToPercent(item.score);
+            const isExpanded = expandedIds.has(item.id);
             return (
-              <Link
+              <div
                 key={item.id}
-                href={`/media/${item.id}`}
-                className="group rounded-lg overflow-hidden border border-default transition-all duration-200 hover:border-[var(--border-subtle)] hover:shadow-md hover:scale-[1.02]"
+                className="group flex flex-col rounded-lg overflow-hidden border border-default transition-all duration-200 hover:border-[var(--border-subtle)] hover:shadow-md hover:scale-[1.02]"
                 style={{ backgroundColor: "var(--bg-secondary)" }}
               >
-                <div className="relative aspect-square overflow-hidden" style={{ backgroundColor: "var(--bg-tertiary)" }}>
+                <Link href={`/media/${item.id}`} className="relative aspect-square overflow-hidden" style={{ backgroundColor: "var(--bg-tertiary)" }}>
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={getThumbnailUrl(item.id)}
@@ -304,35 +314,71 @@ function SearchContent() {
                   >
                     {getSimilarityLabel(item.score)}
                   </span>
-                </div>
-                <div className="p-3">
-                  <p className="text-xs font-medium truncate" style={{ color: "var(--text-primary)" }}>
-                    {item.filename}
-                  </p>
-                  {/* Score bar */}
-                  <div className="flex items-center gap-2 mt-2">
-                    <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: "var(--bg-tertiary)" }}>
-                      <div
-                        className="h-full rounded-full transition-all duration-500"
-                        style={{
-                          width: `${percent}%`,
-                          background: percent >= 80
-                            ? "linear-gradient(90deg, var(--accent-primary), var(--accent-hover))"
-                            : percent >= 50
-                            ? "var(--accent-primary)"
-                            : "var(--text-tertiary)",
-                        }}
-                      />
+                </Link>
+                <div className="p-3 flex-1 flex flex-col justify-between">
+                  <div>
+                    <Link href={`/media/${item.id}`}>
+                      <p className="text-xs font-medium truncate hover:text-brand transition-colors cursor-pointer" style={{ color: "var(--text-primary)" }}>
+                        {item.filename}
+                      </p>
+                    </Link>
+                    {/* Score bar */}
+                    <div className="flex items-center gap-2 mt-2">
+                      <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: "var(--bg-tertiary)" }}>
+                        <div
+                          className="h-full rounded-full transition-all duration-500"
+                          style={{
+                            width: `${percent}%`,
+                            background: percent >= 80
+                              ? "linear-gradient(90deg, var(--accent-primary), var(--accent-hover))"
+                              : percent >= 50
+                              ? "var(--accent-primary)"
+                              : "var(--text-tertiary)",
+                          }}
+                        />
+                      </div>
                     </div>
                   </div>
-                  <div className="flex items-center justify-between mt-2">
-                    <span className="text-[10px]" style={{ color: "var(--text-tertiary)" }}>
-                      {formatFileSize(item.file_size)} • Similarity: {item.score.toFixed(3)}
-                    </span>
-                    <StatusBadge status={item.status} />
+                  
+                  <div className="mt-2">
+                    <div className="flex items-center justify-between text-[10px]" style={{ color: "var(--text-tertiary)" }}>
+                      <span>{formatFileSize(item.file_size)}</span>
+                      <span>Similarity: {item.score.toFixed(3)}</span>
+                    </div>
+                    
+                    <div className="flex items-center justify-between mt-2 pt-2 border-t border-[var(--border-default)]">
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault();
+                          toggleExpanded(item.id);
+                        }}
+                        className="inline-flex items-center gap-0.5 px-2 py-1 rounded text-[10px] font-semibold border border-default hover:bg-[var(--bg-tertiary)] transition-colors"
+                        style={{ color: "var(--text-secondary)" }}
+                      >
+                        ⓘ Why?
+                      </button>
+                      <StatusBadge status={item.status} />
+                    </div>
                   </div>
                 </div>
-              </Link>
+
+                {/* Match Explanation section */}
+                {isExpanded && item.explanation && item.explanation.length > 0 && (
+                  <div className="p-3 border-t border-default bg-[var(--bg-tertiary)] space-y-2 text-left">
+                    <p className="text-[10px] font-bold" style={{ color: "var(--text-primary)" }}>
+                      Why this matched
+                    </p>
+                    <div className="space-y-1">
+                      {item.explanation.map((exp: string, idx: number) => (
+                        <div key={idx} className="flex items-start gap-1 text-[10px]" style={{ color: "var(--text-secondary)" }}>
+                          <span className="text-[var(--success)] font-bold">✓</span>
+                          <span>{exp}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
             );
           })}
         </div>

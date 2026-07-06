@@ -1,7 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getMediaDetail, getThumbnailUrl, getOriginalUrl, reprocessMedia } from "@/lib/api";
+import { getMediaDetail, getThumbnailUrl, getOriginalUrl, reprocessMedia, getSimilarMedia } from "@/lib/api";
 import { formatFileSize, formatDate } from "@/lib/utils";
 import PageHeader from "@/components/layout/PageHeader";
 import StatusBadge from "@/components/shared/StatusBadge";
@@ -16,10 +17,17 @@ export default function MediaDetailPage() {
   const params = useParams();
   const id = params.id as string;
   const queryClient = useQueryClient();
+  const [showSimilar, setShowSimilar] = useState(false);
 
   const { data: asset, isLoading, error } = useQuery({
     queryKey: ["media", id],
     queryFn: () => getMediaDetail(id),
+  });
+
+  const { data: similarImages, isLoading: isSimilarLoading } = useQuery({
+    queryKey: ["similar-media", id],
+    queryFn: () => getSimilarMedia(id, 20),
+    enabled: showSimilar,
   });
 
   const reprocessMut = useMutation({
@@ -65,6 +73,18 @@ export default function MediaDetailPage() {
           <ArrowLeft className="w-4 h-4" /> Back to Gallery
         </Link>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowSimilar(!showSimilar)}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border text-xs font-medium transition-colors ${
+              showSimilar
+                ? "border-brand text-brand bg-brand/10 hover:bg-brand/20"
+                : "border-default hover:bg-[var(--bg-tertiary)]"
+            }`}
+            style={{ color: showSimilar ? undefined : "var(--text-secondary)" }}
+          >
+            <Brain className="w-3.5 h-3.5 text-purple-400" />
+            Find Similar
+          </button>
           <button
             onClick={() => reprocessMut.mutate()}
             disabled={reprocessMut.isPending}
@@ -148,6 +168,90 @@ export default function MediaDetailPage() {
           </MetadataSection>
         </div>
       </div>
+
+      {/* Similar Images Section */}
+      {showSimilar && (
+        <div className="mt-8 p-6 rounded-xl border border-default animate-fadeIn" style={{ backgroundColor: "var(--bg-secondary)" }}>
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-2">
+              <Brain className="w-5 h-5 text-purple-400" />
+              <h3 className="text-base font-semibold" style={{ color: "var(--text-primary)" }}>
+                AI-Powered Similar Images
+              </h3>
+            </div>
+            <button
+              onClick={() => setShowSimilar(false)}
+              className="text-xs font-semibold text-brand hover:underline"
+            >
+              Close
+            </button>
+          </div>
+
+          {isSimilarLoading ? (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 animate-pulse">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className="aspect-square rounded-lg skeleton" />
+              ))}
+            </div>
+          ) : !similarImages || similarImages.length === 0 ? (
+            <p className="text-sm py-4 text-center" style={{ color: "var(--text-tertiary)" }}>
+              No similar images found with similarity ≥ 80%.
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+              {similarImages.map((sim) => {
+                const pct = Math.round(sim.similarity_percentage);
+                let badgeLabel = "";
+                let badgeClass = "";
+                if (pct >= 98) {
+                  badgeLabel = "Near Duplicate";
+                  badgeClass = "bg-purple-500/20 text-purple-400 border border-purple-500/30";
+                } else if (pct >= 95) {
+                  badgeLabel = "Extremely Similar";
+                  badgeClass = "bg-red-500/20 text-red-400 border border-red-500/30";
+                } else if (pct >= 90) {
+                  badgeLabel = "Very Similar";
+                  badgeClass = "bg-orange-500/20 text-orange-400 border border-orange-500/30";
+                } else if (pct >= 80) {
+                  badgeLabel = "Similar";
+                  badgeClass = "bg-green-500/20 text-green-400 border border-green-500/30";
+                }
+
+                return (
+                  <Link
+                    key={sim.image.id}
+                    href={`/media/${sim.image.id}`}
+                    className="group relative aspect-square rounded-lg overflow-hidden border border-default transition-all duration-200 hover:border-[var(--border-subtle)] hover:shadow-md hover:scale-[1.02]"
+                    style={{ backgroundColor: "var(--bg-tertiary)" }}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={getThumbnailUrl(sim.image.id)}
+                      alt={sim.filename}
+                      className="w-full h-full object-cover"
+                      loading="lazy"
+                    />
+                    
+                    {/* Badge Overlay */}
+                    {badgeLabel && (
+                      <span className={`absolute top-2 left-2 z-10 px-1.5 py-0.5 rounded text-[8px] font-bold shadow-sm ${badgeClass}`}>
+                        {badgeLabel}
+                      </span>
+                    )}
+
+                    {/* Hover title */}
+                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/45 transition-all duration-200 flex items-end pointer-events-none">
+                      <div className="w-full p-2 translate-y-full group-hover:translate-y-0 transition-transform duration-200 bg-gradient-to-t from-black/80 to-transparent">
+                        <p className="text-[10px] font-medium text-white truncate">{sim.filename}</p>
+                      </div>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Processing Timeline */}
       <div className="mt-8 p-6 rounded-xl border border-default" style={{ backgroundColor: "var(--bg-secondary)" }}>

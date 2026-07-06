@@ -7,9 +7,10 @@ from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from sqlalchemy.orm import selectinload
+from typing import List
 from app.database import get_db
 from app.modules.media.models import MediaAsset, PhotoMetadata, MediaEmbedding, AssetStatus
-from app.modules.media.schemas import UploadResponse, MediaAssetResponse, StatusResponse, SearchResponse, MediaListResponse
+from app.modules.media.schemas import UploadResponse, MediaAssetResponse, StatusResponse, SearchResponse, MediaListResponse, SimilarImageResponse
 from app.modules.media.services.upload_service import UploadService, DuplicateAssetError
 from app.modules.media.services.storage_service import StorageService
 from app.modules.media.services.search_service import SearchService
@@ -300,5 +301,110 @@ async def delete_media(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete media asset from backend repository."
         )
+
+
+@router.get("/{media_id}/similar", response_model=List[SimilarImageResponse])
+async def find_similar_images(
+    media_id: uuid.UUID,
+    limit: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retrieve similar images based on an existing media ID vector in Qdrant.
+    Excludes the source image and filters out similarities below 80%.
+    """
+    from app.qdrant_client_helper import get_qdrant_client
+    from app.config import settings
+    from app.modules.media.services.qdrant_service import QdrantService
+
+    # 1. Check if media asset exists in PostgreSQL first
+    stmt = select(MediaAsset).where(MediaAsset.id == media_id)
+    result = await db.execute(stmt)
+    source_asset = result.scalar_one_or_none()
+    if not source_asset:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Source media asset not found."
+        )
+
+    # 2. Retrieve vector from Qdrant
+    client = get_qdrant_client()
+    collection_name = QdrantService.get_collection_name(settings.CLIP_MODEL_NAME)
+    try:
+        points = client.retrieve(
+            collection_name=collection_name,
+            ids=[str(media_id)],
+            with_vectors=True
+        )
+        if not points or not points[0].vector:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Embedding for the specified media asset does not exist in Qdrant."
+            )
+        vector = points[0].vector
+    except Exception as e:
+        logger.error(f"Similar Router: Failed to retrieve vector for asset [{media_id}]: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve vector embedding from Qdrant."
+        )
+
+    # 3. Query Qdrant for similar vectors (limit + 1 to account for the source asset)
+    try:
+        candidates = QdrantService.search_vectors(
+            vector=vector,
+            model_name=settings.CLIP_MODEL_NAME,
+            limit=limit + 1,
+            offset=0
+        )
+    except Exception as e:
+        logger.error(f"Similar Router: Qdrant search failed for asset [{media_id}]: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Vector search similarity lookup failed."
+        )
+
+    # 4. Filter and slice candidates
+    # Exclude source_id and check similarity score >= 0.8
+    valid_candidates = []
+    for c in candidates:
+        if c["id"] != media_id and c["score"] >= 0.8:
+            valid_candidates.append(c)
+            
+    valid_candidates = valid_candidates[:limit]
+    
+    if not valid_candidates:
+        return []
+
+    # 5. Hydrate candidates from PostgreSQL
+    candidate_ids = [c["id"] for c in valid_candidates]
+    score_map = {c["id"]: c["score"] for c in valid_candidates}
+    
+    hydrate_stmt = (
+        select(MediaAsset)
+        .options(
+            selectinload(MediaAsset.photo_metadata),
+            selectinload(MediaAsset.ai_analysis)
+        )
+        .where(MediaAsset.id.in_(candidate_ids))
+    )
+    hydrated_result = await db.execute(hydrate_stmt)
+    hydrated_assets = hydrated_result.scalars().all()
+    assets_map = {asset.id: asset for asset in hydrated_assets}
+    
+    # 6. Construct response matching SimilarImageResponse
+    response_items = []
+    for c_id in candidate_ids:
+        asset = assets_map.get(c_id)
+        if asset:
+            score = score_map[c_id]
+            response_items.append({
+                "image": asset,
+                "filename": asset.filename,
+                "score": score,
+                "similarity_percentage": score * 100
+            })
+            
+    return response_items
 
 

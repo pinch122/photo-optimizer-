@@ -74,6 +74,23 @@ export async function deleteMedia(id: string): Promise<{ message: string }> {
   return data;
 }
 
+export interface SimilarImage {
+  image: MediaAsset;
+  filename: string;
+  score: number;
+  similarity_percentage: number;
+}
+
+export async function getSimilarMedia(
+  id: string,
+  limit: number = 20
+): Promise<SimilarImage[]> {
+  const { data } = await api.get<SimilarImage[]>(`/media/${id}/similar`, {
+    params: { limit },
+  });
+  return data;
+}
+
 // ─── File URLs ─────────────────────────────────────────────────────
 export function getThumbnailUrl(id: string): string {
   return `${API_BASE_URL}/api/media/${id}/file?size=thumbnail`;

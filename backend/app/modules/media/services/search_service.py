@@ -167,16 +167,14 @@ class SearchService:
         assets_map = {asset.id: asset for asset in assets}
         
         # Sort records to match the ranking pipeline ordering and dynamically assign scores
+        from app.modules.media.services.explanation_service import ExplanationService
+        
         ranked_items = []
         for hit_id in hit_ids:
             asset = assets_map.get(hit_id)
             if asset:
                 asset.score = scores_map[hit_id]
-                
-                # TODO: Future Search Explanation generation will populate this list
-                # e.g., asset.explanation = await ExplanationGenerator.generate(asset, query_text)
-                asset.explanation = None
-                
+                asset.explanation = ExplanationService.generate_explanation(query_text, asset, scores_map[hit_id])
                 ranked_items.append(asset)
             else:
                 logger.warning(f"Search Service: Vector match [{hit_id}] found in Qdrant but missing from PostgreSQL.")
