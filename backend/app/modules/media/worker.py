@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import select
@@ -122,6 +123,10 @@ async def process_media_task(asset_id: uuid.UUID) -> None:
             
             logger.info(f"Background Worker Success: Asset [{asset_id}] completed processing and is now READY.")
             
+            # Fire AI analysis as a non-blocking tail task.
+            # This runs independently after READY — never delays or blocks the user.
+            asyncio.create_task(run_ai_analysis_task(asset_id))
+            
         except Exception as e:
             logger.error(f"Background Worker Exception for asset [{asset_id}]: {e}. Triggering rollback recovery.")
             await session.rollback()
@@ -150,3 +155,41 @@ async def process_media_task(asset_id: uuid.UUID) -> None:
                     logger.info(f"Background Worker: Asset [{asset_id}] marked as FAILED in database.")
             except Exception as db_err:
                 logger.error(f"Background Worker critical failure: Could not record FAILED state for asset [{asset_id}]: {db_err}")
+
+
+async def run_ai_analysis_task(asset_id: uuid.UUID) -> None:
+    """
+    Fire-and-forget AI analysis tail task.
+
+    Runs after the primary processing pipeline marks the asset READY.
+    Opens its own DB session so it is fully decoupled from the main worker session.
+
+    Pipeline
+    --------
+    1. Instantiate the configured VisionProvider via factory
+    2. Instantiate AIAnalysisService with that provider
+    3. Call analyze_image() — never raises; all errors persist as FAILED status
+
+    This function is called via asyncio.create_task() and must never raise.
+    """
+    logger.info(f"AI Analysis Task: Initializing for asset [{asset_id}].")
+    try:
+        # Import here to avoid circular imports at module load time
+        from app.modules.media.services.ai_analysis.analysis_service import AIAnalysisService
+        from app.modules.media.services.ai_analysis.provider_factory import get_default_provider
+
+        provider = get_default_provider()
+        service = AIAnalysisService(provider)
+
+        async with async_session() as db:
+            await service.analyze_image(asset_id, db)
+
+        logger.info(f"AI Analysis Task: Completed for asset [{asset_id}].")
+
+    except Exception as e:
+        # This should never be reached (AIAnalysisService swallows exceptions),
+        # but provides a final safety net to prevent crashing the event loop.
+        logger.error(
+            f"AI Analysis Task: Unhandled exception for asset [{asset_id}]: {e}"
+        )
+

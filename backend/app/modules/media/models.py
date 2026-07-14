@@ -104,30 +104,105 @@ class MediaEmbedding(Base):
         UniqueConstraint("media_asset_id", "model_name", name="uq_asset_model"),
     )
 
+class AnalysisStatus(str, enum.Enum):
+    """
+    Lifecycle states for the AI Understanding Engine analysis pipeline.
+
+    PENDING             — queued, not yet started
+    PROCESSING          — provider call in-flight
+    COMPLETED           — analysis succeeded, Knowledge Record persisted
+    FAILED              — provider call or DB write failed; eligible for retry
+    SKIPPED_NO_PROVIDER — no configured provider available (e.g. missing API key)
+    """
+    PENDING = "PENDING"
+    PROCESSING = "PROCESSING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    SKIPPED_NO_PROVIDER = "SKIPPED_NO_PROVIDER"
+
+
 class ImageAIAnalysis(Base):
+    """
+    Knowledge Record — structured semantic understanding of a media asset.
+
+    One-to-one with MediaAsset. Designed for long-term extensibility: new fields
+    from future provider outputs are added as nullable columns without schema breaks.
+
+    Sections
+    --------
+    General           — processing lifecycle and provider identity
+    Visual            — caption, scene, objects, activities
+    Image Quality     — indoor/outdoor, weather, season, colors
+    People            — head count
+    Documents         — OCR text, document classification
+    Memory            — event type, travel flag, location guess, mood, keywords
+    AI Metadata       — confidence score, raw provider response, retry tracking
+    """
     __tablename__ = "image_ai_analysis"
 
+    # ── Primary Key ────────────────────────────────────────────────────────────
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     media_asset_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("media_assets.id", ondelete="CASCADE"),
         unique=True,
-        nullable=False
+        nullable=False,
+        index=True
     )
-    
+
+    # ── General / Processing Lifecycle ─────────────────────────────────────────
+    processing_status: Mapped[str] = mapped_column(
+        String(30),
+        default=AnalysisStatus.PENDING.value,
+        nullable=False,
+        index=True
+    )
+    processed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    model_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    model_version: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    # Legacy column — kept for backward compatibility with ingested records
+    gemini_model_version: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+
+    # ── Visual Understanding ────────────────────────────────────────────────────
     caption: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
-    objects: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True)
+    detailed_description: Mapped[Optional[str]] = mapped_column(String(4000), nullable=True)
     scene: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    objects: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True)
     activities: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True)
-    mood: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-    keywords: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True)
+
+    # ── Image Understanding ─────────────────────────────────────────────────────
+    indoor_outdoor: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    # Legacy boolean kept for backward compat; indoor_outdoor supersedes it
     is_indoor: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     weather: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     season: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    dominant_colors: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True)
+
+    # ── People ──────────────────────────────────────────────────────────────────
+    people_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # ── Documents / OCR ────────────────────────────────────────────────────────
+    detected_text: Mapped[Optional[str]] = mapped_column(String(8000), nullable=True)
+    document_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+
+    # ── Memory Understanding ────────────────────────────────────────────────────
+    event_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    travel_event: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    location_guess: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     estimated_location: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    mood: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    keywords: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    # ── AI Metadata ─────────────────────────────────────────────────────────────
     ai_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    gemini_model_version: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    raw_response: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error_message: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
+
+    # ── Timestamps ──────────────────────────────────────────────────────────────
     analysis_timestamp: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), 
+        DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         nullable=False
     )

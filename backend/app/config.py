@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     SEARCH_SIMILARITY_THRESHOLD: float = 0.22
     SEARCH_CANDIDATE_LIMIT: int = 20
 
+    # AI Understanding Engine Settings
+    VISION_PROVIDER: str = "gemini"     # gemini | null — future: gpt4v | claude | florence
+    AI_ANALYSIS_ENABLED: bool = True
+    AI_ANALYSIS_MAX_RETRIES: int = 3
+
 
 
     # Database URL helper
