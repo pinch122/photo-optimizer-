@@ -254,6 +254,8 @@ class AIAnalysisService:
             record.location_guess = result.location_guess
         if result.mood is not None:
             record.mood = result.mood
+        if result.keywords is not None:
+            record.keywords = result.keywords
 
         # AI metadata
         if result.ai_confidence is not None:

@@ -64,6 +64,7 @@ export default function MediaDetailPage() {
   }
 
   const meta = asset.photo_metadata;
+  const ai = asset.ai_analysis;
 
   return (
     <>
@@ -123,6 +124,114 @@ export default function MediaDetailPage() {
 
         {/* Metadata Sidebar */}
         <div className="lg:col-span-2 space-y-6">
+          {/* Image Insights */}
+          <MetadataSection title="Image Insights" icon={Brain}>
+            {ai?.scene && (
+              <MetadataRow label="Scene" value={ai.scene.charAt(0).toUpperCase() + ai.scene.slice(1)} />
+            )}
+            
+            <MetadataRow label="Dominant Colors" value={
+              <div className="flex flex-wrap gap-1 mt-1 justify-end max-w-[200px]">
+                {ai?.caption && ["yellow", "blue", "red", "green", "white", "black", "orange", "purple", "brown", "pink", "warm", "cool"]
+                  .filter(c => ai.caption?.toLowerCase().includes(c))
+                  .map(c => (
+                    <span key={c} className="px-1.5 py-0.5 rounded text-[9px] bg-zinc-800 text-zinc-300 font-medium border border-zinc-700">
+                      {c.charAt(0).toUpperCase() + c.slice(1)}
+                    </span>
+                  ))
+                }
+                {(!ai?.caption || !["yellow", "blue", "red", "green", "white", "black", "orange", "purple", "brown", "pink", "warm", "cool"].some(c => ai.caption?.toLowerCase().includes(c))) && (
+                  <span className="text-xs text-zinc-500">—</span>
+                )}
+              </div>
+            } />
+            
+            <div className="py-2 border-t border-default mt-2">
+              <span className="text-[11px] font-semibold text-zinc-400 block mb-1.5">Image Quality</span>
+              <div className="flex flex-wrap gap-1.5">
+                {(() => {
+                  const quality = ai?.keywords || {};
+                  const brightness = quality.brightness ?? 0.5;
+                  const darkness = quality.darkness ?? 0.5;
+                  const blur_score = quality.blur_score ?? 0;
+                  const sharpness = quality.sharpness ?? 0;
+                  
+                  let sharpnessStars = "★★☆☆☆";
+                  let sharpnessLabel = "Soft";
+                  if (sharpness >= 45) {
+                    sharpnessStars = "★★★★★";
+                    sharpnessLabel = "Sharp";
+                  } else if (sharpness >= 30) {
+                    sharpnessStars = "★★★★☆";
+                    sharpnessLabel = "Sharp";
+                  } else if (sharpness >= 15) {
+                    sharpnessStars = "★★★☆☆";
+                    sharpnessLabel = "Moderate";
+                  }
+                  
+                  const badges = [
+                    <span key="sharp" className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                      {sharpnessStars} {sharpnessLabel}
+                    </span>
+                  ];
+                  
+                  if (brightness > 0.65) {
+                    badges.push(
+                      <span key="bright" className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                        ☀ Bright
+                      </span>
+                    );
+                  }
+                  if (darkness > 0.65) {
+                    badges.push(
+                      <span key="dark" className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-slate-500/10 text-zinc-400 border border-zinc-500/20">
+                        🌑 Dark
+                      </span>
+                    );
+                  }
+                  if (blur_score > 35) {
+                    badges.push(
+                      <span key="blurry" className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-red-500/10 text-red-400 border border-red-500/20">
+                        🌫 Blurry
+                      </span>
+                    );
+                  }
+                  if (meta && meta.width * meta.height >= 2073600) {
+                    badges.push(
+                      <span key="hd" className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                        HD High Resolution
+                      </span>
+                    );
+                  }
+                  return badges;
+                })()}
+              </div>
+            </div>
+
+            <MetadataRow label="Duplicate Status" value={asset.p_hash ? "Ready for duplicate detection" : "No perceptual hash available"} />
+            
+            {(() => {
+              const tags = [];
+              if (ai?.objects) tags.push(...ai.objects);
+              if (ai?.activities) tags.push(...ai.activities);
+              if (ai?.mood) tags.push(ai.mood);
+              if (tags.length === 0) return null;
+              
+              return (
+                <div className="py-2 border-t border-default mt-2">
+                  <span className="text-[11px] font-semibold text-zinc-400 block mb-1.5">Similarity Tags</span>
+                  <div className="flex flex-wrap gap-1 max-h-[100px] overflow-y-auto">
+                    {tags.map(tag => (
+                      <span key={tag} className="px-2 py-0.5 rounded-full text-[9px] bg-zinc-800 text-zinc-300 border border-zinc-700">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+          </MetadataSection>
+
           {/* File Info */}
           <MetadataSection title="File Information" icon={FileImage}>
             <MetadataRow label="Name" value={asset.filename} />
@@ -130,9 +239,6 @@ export default function MediaDetailPage() {
             <MetadataRow label="Media Type" value={asset.media_type} />
             <MetadataRow label="Size" value={formatFileSize(asset.file_size)} />
             <MetadataRow label="Status" value={<StatusBadge status={asset.status} />} />
-            {typeof (asset as any).score === "number" && (
-              <MetadataRow label="Similarity Score" value={`${Math.round((asset as any).score * 100)}%`} />
-            )}
             <MetadataRow label="Uploaded" value={formatDate(asset.created_at)} />
             {asset.taken_at && <MetadataRow label="Taken" value={formatDate(asset.taken_at)} />}
           </MetadataSection>
@@ -148,24 +254,6 @@ export default function MediaDetailPage() {
               {meta.iso_speed && <MetadataRow label="ISO" value={meta.iso_speed.toString()} />}
             </MetadataSection>
           )}
-
-          {/* Location */}
-          {meta && (meta.gps_latitude || meta.gps_longitude) && (
-            <MetadataSection title="Location" icon={MapPin}>
-              <MetadataRow label="Latitude" value={meta.gps_latitude?.toFixed(6) || "—"} mono />
-              <MetadataRow label="Longitude" value={meta.gps_longitude?.toFixed(6) || "—"} mono />
-            </MetadataSection>
-          )}
-
-          {/* AI Processing */}
-          <MetadataSection title="AI Processing" icon={Brain}>
-            <MetadataRow
-              label="Embedding"
-              value={asset.status === "READY" ? "✅ Generated" : asset.status === "PROCESSING" ? "⏳ Processing" : "❌ Not generated"}
-            />
-            <MetadataRow label="Model" value="clip-ViT-B-32" mono />
-            <MetadataRow label="Dimensions" value="512" mono />
-          </MetadataSection>
         </div>
       </div>
 
@@ -204,29 +292,29 @@ export default function MediaDetailPage() {
                 let badgeLabel = "";
                 let badgeClass = "";
                 if (pct >= 98) {
-                  badgeLabel = "Near Duplicate";
+                  badgeLabel = "⭐ Near Duplicate";
                   badgeClass = "bg-purple-500/20 text-purple-400 border border-purple-500/30";
                 } else if (pct >= 95) {
-                  badgeLabel = "Extremely Similar";
-                  badgeClass = "bg-red-500/20 text-red-400 border border-red-500/30";
+                  badgeLabel = "🟣 Extremely Similar";
+                  badgeClass = "bg-purple-600/20 text-purple-400 border border-purple-600/30";
                 } else if (pct >= 90) {
-                  badgeLabel = "Very Similar";
-                  badgeClass = "bg-orange-500/20 text-orange-400 border border-orange-500/30";
+                  badgeLabel = "🔵 Very Similar";
+                  badgeClass = "bg-blue-500/20 text-blue-400 border border-blue-500/30";
                 } else if (pct >= 80) {
-                  badgeLabel = "Similar";
-                  badgeClass = "bg-green-500/20 text-green-400 border border-green-500/30";
+                  badgeLabel = "⚪ Similar";
+                  badgeClass = "bg-zinc-500/20 text-zinc-400 border border-zinc-500/30";
                 }
 
                 return (
                   <Link
-                    key={sim.image.id}
-                    href={`/media/${sim.image.id}`}
+                    key={sim.id}
+                    href={`/media/${sim.id}`}
                     className="group relative aspect-square rounded-lg overflow-hidden border border-default transition-all duration-200 hover:border-[var(--border-subtle)] hover:shadow-md hover:scale-[1.02]"
                     style={{ backgroundColor: "var(--bg-tertiary)" }}
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
-                      src={getThumbnailUrl(sim.image.id)}
+                      src={sim.thumbnail_url}
                       alt={sim.filename}
                       className="w-full h-full object-cover"
                       loading="lazy"

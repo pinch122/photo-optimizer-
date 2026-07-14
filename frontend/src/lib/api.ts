@@ -75,9 +75,11 @@ export async function deleteMedia(id: string): Promise<{ message: string }> {
 }
 
 export interface SimilarImage {
-  image: MediaAsset;
+  id: string;
   filename: string;
-  score: number;
+  thumbnail_url: string;
+  original_url: string;
+  similarity_score: number;
   similarity_percentage: number;
 }
 

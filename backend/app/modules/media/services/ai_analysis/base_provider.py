@@ -61,6 +61,7 @@ class AnalysisResult:
     travel_event: Optional[bool] = None
     location_guess: Optional[str] = None
     mood: Optional[str] = None
+    keywords: Optional[dict] = field(default=None)  # Dictionary to store semantic tags and/or image stats
 
     # AI metadata
     ai_confidence: Optional[float] = None         # 0.0 – 1.0

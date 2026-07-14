@@ -1,27 +1,14 @@
 """
-Gemini Vision Provider — Sprint 5 Stub.
+Gemini Vision Provider.
 
-This provider is intentionally stubbed for Sprint 5. The VisionProvider
-interface is fully wired; the actual Gemini API call and structured prompt
-will be implemented in Sprint 6 once the API key is configured.
-
-Current behaviour
------------------
-- If GEMINI_API_KEY is empty  → returns None  (triggers SKIPPED_NO_PROVIDER)
-- If GEMINI_API_KEY is set    → also returns None (stub) with an info log
-
-Sprint 6 will replace the stub body of analyze() with:
-    - Load image bytes
-    - Call google.genai client with a structured JSON prompt
-    - Parse response into AnalysisResult
-    - Return populated result
-
-To swap in a real implementation, only this file changes.
-AIAnalysisService, worker.py, and the rest of the application are unaffected.
+This provider implements the VisionProvider interface using the Google GenAI SDK.
+It calls the Gemini API to analyze an image and return raw JSON conforming to the schema.
 """
 
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Optional
 
 from app.config import settings
@@ -32,9 +19,6 @@ from app.modules.media.services.ai_analysis.base_provider import AnalysisResult,
 class GeminiVisionProvider(VisionProvider):
     """
     Vision provider backed by Google Gemini multimodal models.
-
-    Sprint 5: stubbed — returns None until Sprint 6 implementation.
-    Sprint 6: will use google-genai SDK with gemini-1.5-flash or gemini-pro-vision.
     """
 
     _MODEL_NAME = "gemini-1.5-flash"
@@ -48,11 +32,10 @@ class GeminiVisionProvider(VisionProvider):
 
     async def analyze(self, image_path: str) -> Optional[AnalysisResult]:
         """
-        Sprint 5: Stub implementation.
+        Run Gemini vision analysis on the image at image_path.
 
-        Returns None if no API key is configured, signalling SKIPPED_NO_PROVIDER.
-        Returns None even with a key (stub), signalling SKIPPED_NO_PROVIDER until
-        Sprint 6 implements the actual Gemini API call.
+        If GEMINI_API_KEY is not configured, logs an info message and returns None
+        (triggers SKIPPED_NO_PROVIDER status).
         """
         if not settings.GEMINI_API_KEY:
             logger.info(
@@ -62,9 +45,56 @@ class GeminiVisionProvider(VisionProvider):
             )
             return None
 
-        # Sprint 6: replace this block with the real Gemini API call.
         logger.info(
-            f"GeminiVisionProvider: API key found but provider is stubbed (Sprint 5). "
-            f"image_path={image_path}. Full implementation ships in Sprint 6."
+            f"AIAnalysisService: Analysis started. Provider selected: '{self.get_model_name()}' (version: '{self.get_model_version()}')."
         )
-        return None
+
+        from PIL import Image
+        from google import genai
+        from google.genai import types
+        from app.modules.media.services.ai_analysis.prompt_template import get_system_prompt, build_analysis_prompt
+        from app.modules.media.services.ai_analysis.response_parser import parse_knowledge_record
+
+        system_prompt = get_system_prompt()
+        user_prompt = build_analysis_prompt(None)
+
+        logger.info(f"GeminiVisionProvider: System prompt version length: {len(system_prompt)} characters.")
+
+        start_time = time.monotonic()
+        try:
+            # Load image using PIL
+            image = Image.open(image_path)
+
+            # Initialize the genai Client
+            client = genai.Client(api_key=settings.GEMINI_API_KEY)
+
+            # Execute API call in a separate thread to prevent blocking the asyncio event loop
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model=self._MODEL_NAME,
+                contents=[image, user_prompt],
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    response_mime_type="application/json",
+                )
+            )
+
+            latency = time.monotonic() - start_time
+            logger.info(f"GeminiVisionProvider: Gemini API call succeeded. Latency: {latency:.3f}s")
+
+            raw_text = response.text
+            if not raw_text:
+                raise ValueError("Gemini API returned an empty response text body.")
+
+            logger.info("GeminiVisionProvider: Handing raw text response to parser for validation and normalization.")
+            analysis_result = parse_knowledge_record(raw_text)
+            logger.info("GeminiVisionProvider: Parsing, validation, and normalization succeeded.")
+
+            return analysis_result
+
+        except Exception as e:
+            latency = time.monotonic() - start_time
+            logger.error(
+                f"GeminiVisionProvider: Error occurred during analysis after {latency:.3f}s: {e}"
+            )
+            raise

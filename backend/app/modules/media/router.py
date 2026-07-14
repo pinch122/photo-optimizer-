@@ -181,7 +181,10 @@ async def get_media_metadata(
     """
     query = (
         select(MediaAsset)
-        .options(selectinload(MediaAsset.photo_metadata))
+        .options(
+            selectinload(MediaAsset.photo_metadata),
+            selectinload(MediaAsset.ai_analysis)
+        )
         .where(MediaAsset.id == id)
     )
     result = await db.execute(query)
@@ -399,9 +402,11 @@ async def find_similar_images(
         if asset:
             score = score_map[c_id]
             response_items.append({
-                "image": asset,
+                "id": asset.id,
                 "filename": asset.filename,
-                "score": score,
+                "thumbnail_url": f"/api/media/{asset.id}/file?size=thumbnail",
+                "original_url": f"/api/media/{asset.id}/file?size=original",
+                "similarity_score": score,
                 "similarity_percentage": score * 100
             })
             

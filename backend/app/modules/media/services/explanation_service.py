@@ -15,7 +15,7 @@ class ExplanationService:
         """
         explanations = []
         
-        # Normalize score to percentage (capped at 100)
+        # Calculate similarity percentage
         similarity_pct = int(round(score * 100))
         if similarity_pct > 100:
             similarity_pct = 100
@@ -37,92 +37,81 @@ class ExplanationService:
         if is_duplicate:
             return explanations
 
-        # 2. Add matched details based on query and metadata
+        # 2. Match exact query tags / metadata (No fabrication!)
         query_words = [w.strip(",.?! ") for w in query_lower.split() if len(w.strip(",.?! ")) > 2]
         
-        # Object matching
-        matched_objects = []
-        if ai and ai.objects:
-            for obj in ai.objects:
-                obj_lower = obj.lower()
-                if any(word in obj_lower or obj_lower in word for word in query_words):
-                    matched_objects.append(obj)
-                    
-        if matched_objects:
-            for obj in matched_objects[:2]:
-                explanations.append(f"{obj.capitalize()} visible")
-                
-        # Scene matching
+        # Scene match
+        scene_matched = False
         if ai and ai.scene:
             scene_lower = ai.scene.lower()
             if any(word in scene_lower or scene_lower in word for word in query_words):
                 explanations.append(f"{ai.scene.capitalize()} scene detected")
-            elif "outdoor" in query_lower and not ai.is_indoor:
-                explanations.append("Natural outdoor scene")
-            elif "indoor" in query_lower and ai.is_indoor:
-                explanations.append("Indoor scene")
+                scene_matched = True
 
-        # Color matching
+        # Objects match
+        objects_matched = []
+        if ai and ai.objects:
+            for obj in ai.objects:
+                obj_lower = obj.lower()
+                if any(word in obj_lower or obj_lower in word for word in query_words):
+                    objects_matched.append(obj)
+                    
+        for obj in objects_matched[:2]:
+            explanations.append(f"{obj.capitalize()} detected")
+
+        # Fallback to "High semantic similarity to your search" if no tags/scene matched
+        if not scene_matched and not objects_matched:
+            if similarity_pct >= 90:
+                explanations.append("High semantic similarity to your search")
+            else:
+                explanations.append("Semantic similarity to your search")
+
+        # Indoor/Outdoor scene based on metadata
+        if ai and ai.is_indoor is not None:
+            if ai.is_indoor:
+                explanations.append("Indoor scene")
+            else:
+                explanations.append("Outdoor scene")
+
+        # Color palette matching
         colors = ["yellow", "blue", "red", "green", "white", "black", "orange", "purple", "brown", "pink"]
         matched_color = None
         for color in colors:
             if color in query_lower:
                 matched_color = color
                 break
-                
-        if matched_color and ai:
-            color_matched = False
-            if ai.caption and matched_color in ai.caption.lower():
+        if matched_color:
+            if ai and ai.caption and matched_color in ai.caption.lower():
                 explanations.append(f"{matched_color.capitalize()} colors dominate the image")
-                color_matched = True
-            if not color_matched:
-                explanations.append(f"Warm color palette matches {matched_color}")
+            else:
+                explanations.append("Warm color palette" if matched_color in ["yellow", "red", "orange", "brown"] else "Cool color palette")
 
-        # Quality analysis mapping (Bright, Dark, Exposure, Blur)
+        # Quality metrics (based on actual quality values)
         if ai and ai.keywords:
             quality = ai.keywords
             brightness = quality.get("brightness", 0.5)
             darkness = quality.get("darkness", 0.5)
             blur_score = quality.get("blur_score", 0)
+            sharpness = quality.get("sharpness", 0)
             
-            if "bright" in query_lower or "light" in query_lower:
-                if brightness > 0.6:
-                    explanations.append("High exposure score")
-                    explanations.append("Bright lighting")
-                    explanations.append("White highlights dominate")
-                    explanations.append("Quality analysis classified image as bright")
-            elif "dark" in query_lower or "night" in query_lower:
-                if darkness > 0.6:
-                    explanations.append("Low exposure score")
-                    explanations.append("Dark lighting")
-                    explanations.append("Shadows dominate")
-                    explanations.append("Quality analysis classified image as dark")
-            elif "blurry" in query_lower or "blur" in query_lower:
-                if blur_score > 40:
-                    explanations.append("High blur score detected")
-                    explanations.append("Soft focus/motion blur visible")
+            if "bright" in query_lower and brightness > 0.65:
+                explanations.append("Bright image quality")
+            elif "dark" in query_lower and darkness > 0.65:
+                explanations.append("Dark image quality")
+            elif "blurry" in query_lower and blur_score > 35:
+                explanations.append("Blurry image quality")
+            elif "sharp" in query_lower and sharpness > 30:
+                explanations.append("Sharp image quality")
 
-        # Indoor/Outdoor environment fallback
-        if ai and ai.is_indoor is not None and not any("environment" in exp or "scene" in exp for exp in explanations):
-            if ai.is_indoor:
-                explanations.append("Indoor environment")
-            else:
-                explanations.append("Natural outdoor scene")
-
-        # Fallback tag matching
-        if len(explanations) < 3 and ai and ai.keywords:
-            for kw in ai.keywords.keys():
-                if kw.lower() in query_lower:
-                    explanations.append(f"Matches tag: {kw}")
-
-        # 3. Add Similarity Score (always include at least score for relevance)
-        if similarity_pct >= 95:
-            explanations.append(f"High confidence match ({similarity_pct}%)")
+        # 3. Dynamic Score & Confidence Metrics
+        explanations.append(f"Similarity: {similarity_pct}%")
+        
+        # Confidence mapping
+        if similarity_pct >= 85:
+            explanations.append("Confidence: High")
+        elif similarity_pct >= 70:
+            explanations.append("Confidence: Medium")
         else:
-            explanations.append(f"Similarity score {similarity_pct}%")
+            explanations.append("Confidence: Low")
 
-        # Make sure we have at least 2 points
-        if len(explanations) < 2:
-            explanations.insert(0, "Similar visual composition")
-
-        return explanations[:4]
+        return explanations[:5]

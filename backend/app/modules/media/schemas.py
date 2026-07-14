@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 from app.modules.media.models import MediaType, AssetStatus
@@ -17,6 +17,21 @@ class PhotoMetadataResponse(BaseModel):
     gps_latitude: Optional[float] = None
     gps_longitude: Optional[float] = None
 
+class AIAnalysisResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    caption: Optional[str] = None
+    objects: Optional[List[str]] = None
+    scene: Optional[str] = None
+    activities: Optional[List[str]] = None
+    mood: Optional[str] = None
+    keywords: Optional[Dict[str, Any]] = None
+    is_indoor: Optional[bool] = None
+    weather: Optional[str] = None
+    season: Optional[str] = None
+    estimated_location: Optional[str] = None
+    ai_confidence: Optional[float] = None
+
 class MediaAssetResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -30,6 +45,7 @@ class MediaAssetResponse(BaseModel):
     created_at: datetime
     photo_metadata: Optional[PhotoMetadataResponse] = None
     p_hash: Optional[str] = None
+    ai_analysis: Optional[AIAnalysisResponse] = None
 
 class UploadResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -63,6 +79,7 @@ class SearchResultResponse(BaseModel):
     explanation: Optional[List[str]] = None
     photo_metadata: Optional[PhotoMetadataResponse] = None
     p_hash: Optional[str] = None
+    ai_analysis: Optional[AIAnalysisResponse] = None
 
 
 class SearchResponse(BaseModel):
@@ -77,9 +94,11 @@ class SearchResponse(BaseModel):
 class SimilarImageResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    image: MediaAssetResponse
+    id: UUID
     filename: str
-    score: float
+    thumbnail_url: str
+    original_url: str
+    similarity_score: float
     similarity_percentage: float
 
 class MediaListResponse(BaseModel):

@@ -98,6 +98,7 @@ export default function DashboardPage() {
             mediaData?.items?.map((item) => ({
               ...item,
               score: 1.0, // Default score placeholder for dashboard listing
+              explanation: null,
             })) ?? []
           }
           loading={recentLoading}

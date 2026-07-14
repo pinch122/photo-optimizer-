@@ -13,6 +13,20 @@ export interface PhotoMetadata {
   gps_longitude: number | null;
 }
 
+export interface AIAnalysis {
+  caption: string | null;
+  objects: string[] | null;
+  scene: string | null;
+  activities: string[] | null;
+  mood: string | null;
+  keywords: Record<string, any> | null;
+  is_indoor: boolean | null;
+  weather: string | null;
+  season: string | null;
+  estimated_location: string | null;
+  ai_confidence: number | null;
+}
+
 export interface MediaAsset {
   id: string;
   filename: string;
@@ -24,6 +38,7 @@ export interface MediaAsset {
   created_at: string;
   photo_metadata: PhotoMetadata | null;
   p_hash: string | null;
+  ai_analysis: AIAnalysis | null;
 }
 
 export interface UploadResponse {
@@ -53,6 +68,8 @@ export interface SearchResult {
   score: number;
   photo_metadata: PhotoMetadata | null;
   p_hash: string | null;
+  explanation: string[] | null;
+  ai_analysis: AIAnalysis | null;
 }
 
 export interface SearchResponse {
