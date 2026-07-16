@@ -74,7 +74,8 @@ class VisionProvider(abc.ABC):
 
     Contract
     --------
-    - analyze()          : accepts a local file path, returns AnalysisResult or None
+    - analyze()          : accepts a local file path and optional EXIF context,
+                           returns AnalysisResult or None
     - get_model_name()   : human-readable model identifier ("gemini-1.5-flash")
     - get_model_version(): version string for audit trail ("001" / "2024-05-02")
 
@@ -83,7 +84,11 @@ class VisionProvider(abc.ABC):
     """
 
     @abc.abstractmethod
-    async def analyze(self, image_path: str) -> Optional[AnalysisResult]:
+    async def analyze(
+        self,
+        image_path: str,
+        image_context: Optional[dict] = None,
+    ) -> Optional[AnalysisResult]:
         """
         Run vision analysis on the image at image_path.
 
@@ -91,6 +96,11 @@ class VisionProvider(abc.ABC):
         ----------
         image_path : str
             Absolute path to the image file on the local filesystem.
+        image_context : dict, optional
+            Pre-extracted EXIF/metadata hints to improve accuracy, e.g.:
+            {"taken_at": "2024-07-01T...", "camera_make": "Apple",
+             "gps_latitude": 48.8566, "gps_longitude": 2.3522,
+             "file_name": "IMG_1234.jpg"}
 
         Returns
         -------
@@ -115,3 +125,4 @@ class VisionProvider(abc.ABC):
     def get_model_version(self) -> str:
         """Return the model version string for audit/logging, e.g. '001'."""
         ...
+

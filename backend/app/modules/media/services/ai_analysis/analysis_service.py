@@ -30,8 +30,10 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy.orm import selectinload
+
 from app.logging_config import logger
-from app.modules.media.models import AnalysisStatus, AssetStatus, ImageAIAnalysis, MediaAsset
+from app.modules.media.models import AnalysisStatus, AssetStatus, ImageAIAnalysis, MediaAsset, PhotoMetadata
 from app.modules.media.services.ai_analysis.base_provider import AnalysisResult, VisionProvider
 
 
@@ -78,9 +80,13 @@ class AIAnalysisService:
         )
         start_time = time.monotonic()
 
-        # ── 1. Load MediaAsset ────────────────────────────────────────────────
+        # ── 1. Load MediaAsset + PhotoMetadata ───────────────────────────────
         try:
-            stmt = select(MediaAsset).where(MediaAsset.id == media_id)
+            stmt = (
+                select(MediaAsset)
+                .options(selectinload(MediaAsset.photo_metadata))
+                .where(MediaAsset.id == media_id)
+            )
             result = await db.execute(stmt)
             asset = result.scalar_one_or_none()
 
@@ -98,6 +104,28 @@ class AIAnalysisService:
                 return
 
             image_path = asset.original_path
+
+            # Build image context from EXIF/metadata for enriched Gemini prompts
+            image_context: Optional[dict] = None
+            meta = asset.photo_metadata
+            if meta or asset.filename or asset.taken_at:
+                image_context = {}
+                if asset.filename:
+                    image_context["file_name"] = asset.filename
+                if asset.taken_at:
+                    image_context["taken_at"] = asset.taken_at.isoformat()
+                if meta:
+                    if meta.camera_make:
+                        image_context["camera_make"] = meta.camera_make
+                    if meta.camera_model:
+                        image_context["camera_model"] = meta.camera_model
+                    if meta.gps_latitude is not None:
+                        image_context["gps_latitude"] = meta.gps_latitude
+                    if meta.gps_longitude is not None:
+                        image_context["gps_longitude"] = meta.gps_longitude
+                # Only keep dict if at least one useful key exists
+                if not image_context:
+                    image_context = None
 
         except Exception as load_err:
             logger.error(
@@ -127,7 +155,9 @@ class AIAnalysisService:
                 f"AIAnalysisService: Invoking provider '{self._provider.get_model_name()}' "
                 f"for asset [{media_id}], path={image_path}."
             )
-            ai_result: Optional[AnalysisResult] = await self._provider.analyze(image_path)
+            ai_result: Optional[AnalysisResult] = await self._provider.analyze(
+                image_path, image_context=image_context
+            )
 
         except Exception as provider_err:
             elapsed = time.monotonic() - start_time

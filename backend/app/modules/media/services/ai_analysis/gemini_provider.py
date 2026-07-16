@@ -30,7 +30,11 @@ class GeminiVisionProvider(VisionProvider):
     def get_model_version(self) -> str:
         return self._MODEL_VERSION
 
-    async def analyze(self, image_path: str) -> Optional[AnalysisResult]:
+    async def analyze(
+        self,
+        image_path: str,
+        image_context: Optional[dict] = None,
+    ) -> Optional[AnalysisResult]:
         """
         Run Gemini vision analysis on the image at image_path.
 
@@ -56,9 +60,12 @@ class GeminiVisionProvider(VisionProvider):
         from app.modules.media.services.ai_analysis.response_parser import parse_knowledge_record
 
         system_prompt = get_system_prompt()
-        user_prompt = build_analysis_prompt(None)
+        user_prompt = build_analysis_prompt(image_context)
 
         logger.info(f"GeminiVisionProvider: System prompt version length: {len(system_prompt)} characters.")
+        if image_context:
+            ctx_keys = list(image_context.keys())
+            logger.info(f"GeminiVisionProvider: Image context keys provided: {ctx_keys}")
 
         start_time = time.monotonic()
         try:
@@ -98,3 +105,4 @@ class GeminiVisionProvider(VisionProvider):
                 f"GeminiVisionProvider: Error occurred during analysis after {latency:.3f}s: {e}"
             )
             raise
+

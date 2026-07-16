@@ -47,7 +47,11 @@ class MockSuccessProvider(VisionProvider):
     def get_model_version(self) -> str:
         return "test"
 
-    async def analyze(self, image_path: str) -> Optional[AnalysisResult]:
+    async def analyze(
+        self,
+        image_path: str,
+        image_context: Optional[dict] = None,
+    ) -> Optional[AnalysisResult]:
         return AnalysisResult(
             caption="A beautiful mountain landscape at sunset",
             detailed_description="Wide shot of snow-capped mountains reflecting in a calm lake.",
@@ -76,7 +80,11 @@ class MockFailingProvider(VisionProvider):
     def get_model_version(self) -> str:
         return "test"
 
-    async def analyze(self, image_path: str) -> Optional[AnalysisResult]:
+    async def analyze(
+        self,
+        image_path: str,
+        image_context: Optional[dict] = None,
+    ) -> Optional[AnalysisResult]:
         raise RuntimeError("Simulated provider API failure")
 
 

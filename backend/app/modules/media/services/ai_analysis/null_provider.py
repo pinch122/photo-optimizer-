@@ -32,7 +32,11 @@ class NullProvider(VisionProvider):
     def get_model_version(self) -> str:
         return "0"
 
-    async def analyze(self, image_path: str) -> Optional[AnalysisResult]:
+    async def analyze(
+        self,
+        image_path: str,
+        image_context: Optional[dict] = None,
+    ) -> Optional[AnalysisResult]:
         logger.debug(
             f"NullProvider: analyze() called for image_path={image_path}. "
             "Returning None (analysis disabled)."

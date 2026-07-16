@@ -20,16 +20,41 @@ class PhotoMetadataResponse(BaseModel):
 class AIAnalysisResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
+    # Processing lifecycle
+    processing_status: Optional[str] = None
+    processed_at: Optional[datetime] = None
+    model_name: Optional[str] = None
+
+    # Visual understanding
     caption: Optional[str] = None
-    objects: Optional[List[str]] = None
+    detailed_description: Optional[str] = None
     scene: Optional[str] = None
+    objects: Optional[List[str]] = None
     activities: Optional[List[str]] = None
-    mood: Optional[str] = None
-    keywords: Optional[Dict[str, Any]] = None
-    is_indoor: Optional[bool] = None
+
+    # Image understanding
+    indoor_outdoor: Optional[str] = None
+    is_indoor: Optional[bool] = None          # legacy — kept for frontend compat
     weather: Optional[str] = None
     season: Optional[str] = None
-    estimated_location: Optional[str] = None
+    dominant_colors: Optional[List[str]] = None
+
+    # People
+    people_count: Optional[int] = None
+
+    # Documents / OCR
+    detected_text: Optional[str] = None
+    document_type: Optional[str] = None
+
+    # Memory understanding
+    event_type: Optional[str] = None
+    travel_event: Optional[bool] = None
+    location_guess: Optional[str] = None
+    estimated_location: Optional[str] = None  # legacy alias
+    mood: Optional[str] = None
+    keywords: Optional[Dict[str, Any]] = None
+
+    # AI metadata
     ai_confidence: Optional[float] = None
 
 class MediaAssetResponse(BaseModel):
