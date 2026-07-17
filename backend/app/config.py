@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     STORAGE_PATH: str = "/storage"
     THUMBNAIL_SIZE: int = 300
     LOG_LEVEL: str = "INFO"
-    SEARCH_SIMILARITY_THRESHOLD: float = 0.22
+    SEARCH_SIMILARITY_THRESHOLD: float = 0.35  # Minimum cosine similarity to pass to reranker
     SEARCH_CANDIDATE_LIMIT: int = 20
 
     # AI Understanding Engine Settings

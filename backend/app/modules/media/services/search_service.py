@@ -102,16 +102,25 @@ class SearchService:
 
         # ── 3. Threshold filter ───────────────────────────────────────────────
         threshold = settings.SEARCH_SIMILARITY_THRESHOLD
-        logger.info(f"Search Service: Threshold filtering at {threshold}")
         filtered = [c for c in candidates if c["score"] >= threshold]
-
+        removed = len(candidates) - len(filtered)
         total_filtered = len(filtered)
+
+        logger.info(
+            f"Search Service: Threshold filter | "
+            f"query='{query_text}' | "
+            f"qdrant_candidates={len(candidates)} | "
+            f"threshold={threshold} | "
+            f"removed={removed} | "
+            f"remaining={len(filtered)}"
+        )
 
         if not filtered:
             duration = time.perf_counter() - start_time
             logger.info(
-                f"Search finished (no matches): query='{query_text}', threshold={threshold}, "
-                f"candidates={len(candidates)}, filtered=0, time={duration:.4f}s"
+                f"Search finished (no matches above threshold): "
+                f"query='{query_text}', threshold={threshold}, "
+                f"qdrant_candidates={len(candidates)}, time={duration:.4f}s"
             )
             return {"items": [], "total": 0, "limit": limit, "offset": offset}
 
