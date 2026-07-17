@@ -38,6 +38,18 @@ class Settings(BaseSettings):
     AI_ANALYSIS_ENABLED: bool = True
     AI_ANALYSIS_MAX_RETRIES: int = 3
 
+    # Hybrid Search Weights (must sum ≤ 1.0; embedding is always the primary signal)
+    # Override any value in .env to tune ranking behaviour without code changes.
+    HYBRID_WEIGHT_EMBEDDING: float = 0.55   # CLIP vector cosine similarity
+    HYBRID_WEIGHT_CAPTION: float = 0.15     # Caption text keyword match
+    HYBRID_WEIGHT_OBJECTS: float = 0.10     # Object list match
+    HYBRID_WEIGHT_KEYWORDS: float = 0.08    # Semantic keyword/tag match
+    HYBRID_WEIGHT_SCENE: float = 0.06       # Scene classification match
+    HYBRID_WEIGHT_OCR: float = 0.05         # Detected OCR text match
+    HYBRID_WEIGHT_EVENT: float = 0.03       # Event type match
+    HYBRID_WEIGHT_PEOPLE: float = 0.03      # People count boost (people-related queries)
+    HYBRID_WEIGHT_DOCUMENT: float = 0.03    # Document type boost (doc-related queries)
+
 
 
     # Database URL helper

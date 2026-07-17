@@ -13,19 +13,52 @@ export interface PhotoMetadata {
   gps_longitude: number | null;
 }
 
+export type AnalysisStatus =
+  | "PENDING"
+  | "PROCESSING"
+  | "COMPLETED"
+  | "FAILED"
+  | "SKIPPED_NO_PROVIDER";
+
 export interface AIAnalysis {
+  // Processing lifecycle
+  processing_status: AnalysisStatus | null;
+  processed_at: string | null;
+  model_name: string | null;
+
+  // Visual understanding
   caption: string | null;
-  objects: string[] | null;
+  detailed_description: string | null;
   scene: string | null;
+  objects: string[] | null;
   activities: string[] | null;
-  mood: string | null;
-  keywords: Record<string, any> | null;
-  is_indoor: boolean | null;
+
+  // Image understanding
+  indoor_outdoor: string | null;
+  is_indoor: boolean | null;        // legacy
   weather: string | null;
   season: string | null;
-  estimated_location: string | null;
+  dominant_colors: string[] | null;
+
+  // People
+  people_count: number | null;
+
+  // Documents / OCR
+  detected_text: string | null;
+  document_type: string | null;
+
+  // Memory understanding
+  event_type: string | null;
+  travel_event: boolean | null;
+  location_guess: string | null;
+  estimated_location: string | null; // legacy
+  mood: string | null;
+  keywords: Record<string, any> | null;
+
+  // AI metadata
   ai_confidence: number | null;
 }
+
 
 export interface MediaAsset {
   id: string;

@@ -1,6 +1,20 @@
+"""
+Search Service — Hybrid Semantic + Memory Record Search.
+
+Pipeline (Sprint 7)
+-------------------
+1. Encode query text → 512-dim CLIP vector
+2. Retrieve top-N candidates from Qdrant (cosine similarity)
+3. Threshold-filter candidates (drop score < SEARCH_SIMILARITY_THRESHOLD)
+4. Load PostgreSQL assets + AI Memory Records for ALL filtered candidates
+5. HybridReranker: compute weighted hybrid score using embedding + Memory Record
+6. Paginate the reranked list
+7. Generate explanations and return
+"""
+
 import uuid
 import time
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
@@ -8,48 +22,11 @@ from app.config import settings
 from app.modules.media.models import MediaAsset
 from app.modules.media.services.embedding_service import EmbeddingService
 from app.modules.media.services.qdrant_service import QdrantService
+from app.modules.media.services.hybrid_reranker import HybridReranker, HybridWeights
 from app.logging_config import logger
 
+
 class SearchService:
-    @classmethod
-    async def _rank_and_filter_candidates(
-        cls,
-        candidates: List[Dict[str, Any]],
-        query_text: str,
-        threshold: float
-    ) -> List[Dict[str, Any]]:
-        """
-        Ranker pipeline step. Currently filters candidates below the similarity threshold
-        and sorts them by vector cosine distance score.
-        
-        ========================================================================
-        FUTURE RERANKING ARCHITECTURE
-        ========================================================================
-        When integrating richer AI models, this pipeline should evolve as:
-        
-        Retrieve Candidates (from Qdrant)
-        ↓
-        Threshold Filter (remove extremely low matches early)
-        ↓
-        [TODO: Future Gemini Reranker - re-evaluate top candidates using Gemini Vision LLM]
-        ↓
-        [TODO: Future Metadata Boost - boost scores based on EXIF/GPS/Date matching]
-        ↓
-        Return Re-ranked Results
-        ========================================================================
-        """
-        # Step 1: Threshold Filter
-        filtered = [c for c in candidates if c["score"] >= threshold]
-        
-        # TODO: Future Gemini Reranker will be plugged in here.
-        # e.g., filtered = await GeminiReranker.rerank(filtered, query_text)
-        
-        # TODO: Future Metadata Boost will be plugged in here.
-        # e.g., filtered = await MetadataBooster.apply_boosts(filtered, query_text)
-        
-        # Step 2: Sort remaining by score descending
-        sorted_candidates = sorted(filtered, key=lambda x: x["score"], reverse=True)
-        return sorted_candidates
 
     @classmethod
     async def search_media(
@@ -60,25 +37,28 @@ class SearchService:
         offset: int = 0
     ) -> Dict[str, Any]:
         """
-        Orchestrates semantic text searches:
-        1. Encodes query text into a 512-dimension query vector.
-        2. Queries Qdrant for closest vector matches (Cosine distance, top SEARCH_CANDIDATE_LIMIT candidates).
-        3. Applies ranker pipeline (filtering by threshold and sorting).
-        4. Hydrates PostgreSQL records for the filtered slice.
+        Orchestrate a hybrid semantic + Memory Record search.
+
+        Steps
+        -----
+        1. Encode query → CLIP embedding
+        2. Qdrant: retrieve top-N vector candidates
+        3. Threshold filter
+        4. Hydrate all filtered candidates from PostgreSQL (with ai_analysis)
+        5. HybridReranker: combine embedding score with AI Memory Record signals
+        6. Paginate
+        7. Attach explanations
         """
         if not query_text or not query_text.strip():
             raise ValueError("Query string cannot be empty.")
 
-        # Special bypass for full-library analytics queries using keyword "photo"
+        # ── Special bypass for full-library analytics queries ─────────────────
         if query_text.lower() == "photo":
-            logger.info("Search Service: Bypassing Qdrant search for special query 'photo'")
-            
-            # Count total assets
+            logger.info("Search Service: Bypassing Qdrant for special query 'photo'")
             total_stmt = select(func.count(MediaAsset.id))
             total_result = await db.execute(total_stmt)
             total_filtered = total_result.scalar() or 0
-            
-            # Retrieve all assets with eager loaded metadata and AI analysis
+
             query = (
                 select(MediaAsset)
                 .options(
@@ -89,12 +69,11 @@ class SearchService:
             )
             result = await db.execute(query)
             ranked_items = result.scalars().all()
-            
-            # Populate scores as 1.0
+
             for item in ranked_items:
                 item.score = 1.0
                 item.explanation = None
-                
+
             return {
                 "items": ranked_items,
                 "total": total_filtered,
@@ -103,15 +82,15 @@ class SearchService:
             }
 
         start_time = time.perf_counter()
-        
-        # 1. Generate text embedding query vector
+
+        # ── 1. Generate text embedding ────────────────────────────────────────
         logger.info(f"Search Service: Starting embedding generation for query: '{query_text}'")
         embed_start = time.perf_counter()
         query_vector = await EmbeddingService.generate_text_embedding(query_text)
         embed_duration = time.perf_counter() - embed_start
         logger.info(f"Search Service: Embedding generation complete in {embed_duration:.4f}s")
-        
-        # 2. Query Qdrant for top candidate points (using configurable SEARCH_CANDIDATE_LIMIT)
+
+        # ── 2. Qdrant retrieval ───────────────────────────────────────────────
         candidate_pool_size = settings.SEARCH_CANDIDATE_LIMIT
         logger.info(f"Search Service: Retrieving Top-{candidate_pool_size} candidates from Qdrant")
         candidates = QdrantService.search_vectors(
@@ -120,75 +99,89 @@ class SearchService:
             limit=candidate_pool_size,
             offset=0
         )
-        
-        # 3. Apply ranking and threshold filtering pipeline
+
+        # ── 3. Threshold filter ───────────────────────────────────────────────
         threshold = settings.SEARCH_SIMILARITY_THRESHOLD
-        logger.info(f"Search Service: Running ranking and filtering with threshold: {threshold}")
-        processed_candidates = await cls._rank_and_filter_candidates(
-            candidates=candidates,
-            query_text=query_text,
-            threshold=threshold
-        )
-        
-        total_filtered = len(processed_candidates)
-        
-        # Apply pagination (limit, offset) slicing on the filtered results
-        paginated_candidates = processed_candidates[offset : offset + limit]
-        
-        if not paginated_candidates:
+        logger.info(f"Search Service: Threshold filtering at {threshold}")
+        filtered = [c for c in candidates if c["score"] >= threshold]
+
+        total_filtered = len(filtered)
+
+        if not filtered:
             duration = time.perf_counter() - start_time
             logger.info(
                 f"Search finished (no matches): query='{query_text}', threshold={threshold}, "
-                f"candidates={len(candidates)}, filtered={total_filtered}, time={duration:.4f}s"
+                f"candidates={len(candidates)}, filtered=0, time={duration:.4f}s"
             )
-            return {
-                "items": [],
-                "total": total_filtered,
-                "limit": limit,
-                "offset": offset
-            }
-            
-        # Map IDs and scores
-        hit_ids = [hit["id"] for hit in paginated_candidates]
-        scores_map = {hit["id"]: hit["score"] for hit in paginated_candidates}
-        
-        # 4. Eager load PostgreSQL assets matching the sliced IDs
-        query = (
+            return {"items": [], "total": 0, "limit": limit, "offset": offset}
+
+        # ── 4. Hydrate ALL filtered candidates from PostgreSQL ────────────────
+        # We load all before pagination so the reranker sees the full candidate set.
+        all_ids = [hit["id"] for hit in filtered]
+        pg_query = (
             select(MediaAsset)
             .options(
                 selectinload(MediaAsset.photo_metadata),
                 selectinload(MediaAsset.ai_analysis)
             )
-            .where(MediaAsset.id.in_(hit_ids))
+            .where(MediaAsset.id.in_(all_ids))
         )
-        
-        result = await db.execute(query)
-        assets = result.scalars().all()
+        pg_result = await db.execute(pg_query)
+        assets = pg_result.scalars().all()
         assets_map = {asset.id: asset for asset in assets}
-        
-        # Sort records to match the ranking pipeline ordering and dynamically assign scores
+
+        # Warn about any Qdrant–PG orphans
+        for hit_id in all_ids:
+            if hit_id not in assets_map:
+                logger.warning(
+                    f"Search Service: Qdrant candidate [{hit_id}] not found in PostgreSQL."
+                )
+
+        # ── 5. Hybrid reranking ───────────────────────────────────────────────
+        weights = HybridWeights.from_settings(settings)
+        logger.info(
+            f"Search Service: Running HybridReranker on {len(filtered)} candidates "
+            f"(embedding={weights.embedding}, caption={weights.caption}, "
+            f"objects={weights.objects}, keywords={weights.keywords})"
+        )
+        reranked = HybridReranker.rerank(
+            candidates=filtered,
+            query_text=query_text,
+            assets_map=assets_map,
+            weights=weights,
+        )
+
+        # ── 6. Paginate ───────────────────────────────────────────────────────
+        paginated = reranked[offset: offset + limit]
+
+        # ── 7. Build response with explanations ───────────────────────────────
         from app.modules.media.services.explanation_service import ExplanationService
-        
+
         ranked_items = []
-        for hit_id in hit_ids:
-            asset = assets_map.get(hit_id)
+        for hit in paginated:
+            asset = assets_map.get(hit["id"])
             if asset:
-                asset.score = scores_map[hit_id]
-                asset.explanation = ExplanationService.generate_explanation(query_text, asset, scores_map[hit_id])
+                asset.score = hit["hybrid_score"]
+                # Merge hybrid boost reasons with the base explanation
+                explanation = ExplanationService.generate_explanation(
+                    query_text=query_text,
+                    asset=asset,
+                    score=hit["hybrid_score"],
+                    boost_reasons=hit.get("boost_reasons", []),
+                )
+                asset.explanation = explanation
                 ranked_items.append(asset)
-            else:
-                logger.warning(f"Search Service: Vector match [{hit_id}] found in Qdrant but missing from PostgreSQL.")
-                
+
         duration = time.perf_counter() - start_time
         logger.info(
             f"Search finished: query='{query_text}', threshold={threshold}, "
-            f"candidates={len(candidates)}, filtered={total_filtered}, sliced={len(ranked_items)}, "
-            f"time={duration:.4f}s"
+            f"candidates={len(candidates)}, filtered={total_filtered}, "
+            f"sliced={len(ranked_items)}, time={duration:.4f}s"
         )
-        
+
         return {
             "items": ranked_items,
             "total": total_filtered,
             "limit": limit,
-            "offset": offset
+            "offset": offset,
         }
