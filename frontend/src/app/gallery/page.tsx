@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState, useEffect, useRef } from "react";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { listMedia, getThumbnailUrl, deleteMedia } from "@/lib/api";
 import { formatFileSize, formatDate } from "@/lib/utils";
 import PageHeader from "@/components/layout/PageHeader";
@@ -18,9 +18,7 @@ export default function GalleryPage() {
   const [sortBy, setSortBy] = useState<SortBy>("newest");
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [allItems, setAllItems] = useState<any[]>([]);
-  const [offset, setOffset] = useState(0);
-  const [hasMore, setHasMore] = useState(true);
+  const [deletedIds, setDeletedIds] = useState<Set<string>>(new Set());
   const [photoToDelete, setPhotoToDelete] = useState<any | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
@@ -35,39 +33,40 @@ export default function GalleryPage() {
     }
   }, [toast]);
 
-  // Use the dedicated listMedia endpoint instead of broad search
-  const { data, isLoading, isFetching } = useQuery({
-    queryKey: ["gallery", offset],
-    queryFn: () => listMedia(limit, offset),
+  // Infinite query for gallery items
+  const {
+    data,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    isLoading,
+  } = useInfiniteQuery({
+    queryKey: ["gallery"],
+    queryFn: ({ pageParam = 0 }) => listMedia(limit, pageParam),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) => {
+      const nextOffset = allPages.length * limit;
+      return nextOffset < lastPage.total ? nextOffset : undefined;
+    },
   });
 
-  // Accumulate items for infinite scroll
-  useEffect(() => {
-    if (data?.items) {
-      setAllItems((prev) => {
-        if (offset === 0) return data.items;
-        const existingIds = new Set(prev.map((i) => i.id));
-        const newItems = data.items.filter((i: any) => !existingIds.has(i.id));
-        return [...prev, ...newItems];
-      });
-      setHasMore(data.items.length === limit);
-    }
-  }, [data, offset]);
+  const totalPhotos = data?.pages[0]?.total ?? 0;
+  const allItems = data ? data.pages.flatMap((page) => page.items) : [];
 
   // Intersection observer for infinite scroll
   useEffect(() => {
-    if (!observerRef.current || !hasMore || isFetching) return;
+    if (!observerRef.current || !hasNextPage || isFetchingNextPage) return;
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting && hasMore && !isFetching) {
-          setOffset((prev) => prev + limit);
+        if (entries[0].isIntersecting && hasNextPage) {
+          fetchNextPage();
         }
       },
       { rootMargin: "200px" }
     );
     observer.observe(observerRef.current);
     return () => observer.disconnect();
-  }, [hasMore, isFetching]);
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   const toggleSelect = (id: string) => {
     setSelected((prev) => {
@@ -84,8 +83,12 @@ export default function GalleryPage() {
     try {
       await deleteMedia(photoToDelete.id);
       
-      // Remove immediately from UI state
-      setAllItems((prev) => prev.filter((item) => item.id !== photoToDelete.id));
+      // Instantly hide from UI
+      setDeletedIds((prev) => {
+        const next = new Set(prev);
+        next.add(photoToDelete.id);
+        return next;
+      });
       setToast({ message: "Photo deleted successfully.", type: "success" });
       setPhotoToDelete(null);
 
@@ -100,8 +103,8 @@ export default function GalleryPage() {
     }
   };
 
-  // Filter and sort
-  let filtered = allItems;
+  // Filter and sort items client-side
+  let filtered = allItems.filter((item) => !deletedIds.has(item.id));
   if (statusFilter !== "ALL") {
     filtered = filtered.filter((i) => i.status === statusFilter);
   }
@@ -124,7 +127,7 @@ export default function GalleryPage() {
     <>
       <PageHeader
         title="Gallery"
-        description={data ? `${data.total} photos in your library` : "Loading..."}
+        description={isLoading ? "Loading..." : `${totalPhotos} photos in your library`}
         actions={
           <div className="flex items-center gap-2">
             {/* Status Filter */}
@@ -179,7 +182,7 @@ export default function GalleryPage() {
             <div key={i} className="aspect-square rounded-lg skeleton" />
           ))}
         </div>
-      ) : filtered.length === 0 ? (
+      ) : filtered.length === 0 && !hasNextPage ? (
         <div className="text-center py-16">
           <p className="text-base font-medium" style={{ color: "var(--text-primary)" }}>
             No photos yet
@@ -256,12 +259,21 @@ export default function GalleryPage() {
             })}
           </div>
 
-          {/* Infinite scroll trigger */}
-          {hasMore && (
-            <div ref={observerRef} className="flex items-center justify-center py-8">
-              {isFetching && <Loader2 className="w-5 h-5 animate-spin text-brand" />}
-            </div>
-          )}
+          {/* Infinite scroll loader trigger / End of library */}
+          <div ref={observerRef} className="flex flex-col items-center justify-center py-8">
+            {isFetchingNextPage && (
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 w-full mb-8">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <div key={i} className="aspect-square rounded-lg skeleton" />
+                ))}
+              </div>
+            )}
+            {!hasNextPage && allItems.length > 0 && (
+              <p className="text-xs font-semibold py-4" style={{ color: "var(--text-tertiary)" }}>
+                End of Library
+              </p>
+            )}
+          </div>
         </>
       )}
 
