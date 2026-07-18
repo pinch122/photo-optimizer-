@@ -280,30 +280,8 @@ function SearchContent() {
         </div>
       )}
 
-      {/* Empty state — query ran but no results above threshold */}
-      {data && data.items.length === 0 && searchQuery && !isLoading && !isError && (
-        <div className="flex flex-col items-center justify-center py-20 text-center max-w-sm mx-auto">
-          <div className="text-5xl mb-4">🔍</div>
-          <h2 className="text-base font-semibold mb-1" style={{ color: "var(--text-primary)" }}>
-            No matching images found
-          </h2>
-          <p className="text-sm mb-4" style={{ color: "var(--text-tertiary)" }}>
-            No images in your library matched{" "}
-            <span className="font-medium" style={{ color: "var(--text-secondary)" }}>
-              &ldquo;{searchQuery}&rdquo;
-            </span>{" "}
-            with sufficient similarity.
-          </p>
-          <p className="text-xs" style={{ color: "var(--text-tertiary)" }}>
-            Try a different search term, or use broader words like{" "}
-            <em>beach</em>, <em>people</em>, <em>car</em>, or <em>food</em>.
-          </p>
-        </div>
-      )}
-
       {/* Results Grid */}
       {data && data.items.length > 0 && !isError && (
-
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
           {data.items.map((item) => {
             const percent = scoreToPercent(item.score);

@@ -5,11 +5,10 @@ Pipeline (Sprint 7)
 -------------------
 1. Encode query text → 512-dim CLIP vector
 2. Retrieve top-N candidates from Qdrant (cosine similarity)
-3. Threshold-filter candidates (drop score < SEARCH_SIMILARITY_THRESHOLD)
-4. Load PostgreSQL assets + AI Memory Records for ALL filtered candidates
-5. HybridReranker: compute weighted hybrid score using embedding + Memory Record
-6. Paginate the reranked list
-7. Generate explanations and return
+3. Load PostgreSQL assets + AI Memory Records for ALL candidates
+4. HybridReranker: compute weighted hybrid score using embedding + Memory Record
+5. Paginate the reranked list
+6. Generate explanations and return
 """
 
 import uuid
@@ -100,33 +99,17 @@ class SearchService:
             offset=0
         )
 
-        # ── 3. Threshold filter ───────────────────────────────────────────────
-        threshold = settings.SEARCH_SIMILARITY_THRESHOLD
-        filtered = [c for c in candidates if c["score"] >= threshold]
-        removed = len(candidates) - len(filtered)
-        total_filtered = len(filtered)
-
-        logger.info(
-            f"Search Service: Threshold filter | "
-            f"query='{query_text}' | "
-            f"qdrant_candidates={len(candidates)} | "
-            f"threshold={threshold} | "
-            f"removed={removed} | "
-            f"remaining={len(filtered)}"
-        )
-
-        if not filtered:
+        # ── 3. Hydrate ALL candidates from PostgreSQL ────────────────────────
+        # We load all before pagination so the reranker sees the full candidate set.
+        total_filtered = len(candidates)
+        if not candidates:
             duration = time.perf_counter() - start_time
             logger.info(
-                f"Search finished (no matches above threshold): "
-                f"query='{query_text}', threshold={threshold}, "
-                f"qdrant_candidates={len(candidates)}, time={duration:.4f}s"
+                f"Search finished (no candidates): query='{query_text}', time={duration:.4f}s"
             )
             return {"items": [], "total": 0, "limit": limit, "offset": offset}
 
-        # ── 4. Hydrate ALL filtered candidates from PostgreSQL ────────────────
-        # We load all before pagination so the reranker sees the full candidate set.
-        all_ids = [hit["id"] for hit in filtered]
+        all_ids = [hit["id"] for hit in candidates]
         pg_query = (
             select(MediaAsset)
             .options(
@@ -146,24 +129,24 @@ class SearchService:
                     f"Search Service: Qdrant candidate [{hit_id}] not found in PostgreSQL."
                 )
 
-        # ── 5. Hybrid reranking ───────────────────────────────────────────────
+        # ── 4. Hybrid reranking ───────────────────────────────────────────────
         weights = HybridWeights.from_settings(settings)
         logger.info(
-            f"Search Service: Running HybridReranker on {len(filtered)} candidates "
+            f"Search Service: Running HybridReranker on {len(candidates)} candidates "
             f"(embedding={weights.embedding}, caption={weights.caption}, "
             f"objects={weights.objects}, keywords={weights.keywords})"
         )
         reranked = HybridReranker.rerank(
-            candidates=filtered,
+            candidates=candidates,
             query_text=query_text,
             assets_map=assets_map,
             weights=weights,
         )
 
-        # ── 6. Paginate ───────────────────────────────────────────────────────
+        # ── 5. Paginate ───────────────────────────────────────────────────────
         paginated = reranked[offset: offset + limit]
 
-        # ── 7. Build response with explanations ───────────────────────────────
+        # ── 6. Build response with explanations ───────────────────────────────
         from app.modules.media.services.explanation_service import ExplanationService
 
         ranked_items = []
@@ -183,8 +166,8 @@ class SearchService:
 
         duration = time.perf_counter() - start_time
         logger.info(
-            f"Search finished: query='{query_text}', threshold={threshold}, "
-            f"candidates={len(candidates)}, filtered={total_filtered}, "
+            f"Search finished: query='{query_text}', "
+            f"candidates={len(candidates)}, "
             f"sliced={len(ranked_items)}, time={duration:.4f}s"
         )
 
