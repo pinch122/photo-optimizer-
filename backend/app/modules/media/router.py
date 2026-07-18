@@ -125,7 +125,7 @@ async def reprocess_media(
 @router.get("/search", response_model=SearchResponse)
 async def search_media(
     q: str = Query(..., min_length=1, description="Natural language search query"),
-    limit: int = Query(10, ge=1, le=100, description="Maximum number of items to return"),
+    limit: int = Query(10, ge=1, le=50000, description="Maximum number of items to return"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
     db: AsyncSession = Depends(get_db)
 ):

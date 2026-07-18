@@ -60,9 +60,17 @@ export default function AnalyticsPage() {
                 <span className="font-semibold" style={{ color: "var(--text-primary)" }}>{formatFileSize(totalSize)}</span>
               </div>
               <div className="h-2 w-full rounded-full overflow-hidden" style={{ backgroundColor: "var(--bg-tertiary)" }}>
-                <div className="h-full bg-brand rounded-full" style={{ width: "12%" }} />
+                <div 
+                  className="h-full bg-brand rounded-full transition-all duration-500" 
+                  style={{ width: `${Math.min(100, Math.max(totalSize > 0 ? 0.5 : 0, (totalSize / (50 * 1024 * 1024 * 1024)) * 100))}%` }} 
+                />
               </div>
-              <span className="text-[10px]" style={{ color: "var(--text-tertiary)" }}>12% of 50 GB standard allocation</span>
+              <span className="text-[10px]" style={{ color: "var(--text-tertiary)" }}>
+                {totalSize > 0 && (totalSize / (50 * 1024 * 1024 * 1024) * 100) < 0.1 
+                  ? "< 0.1%" 
+                  : `${(totalSize / (50 * 1024 * 1024 * 1024) * 100).toFixed(1)}%`
+                } of 50 GB standard allocation
+              </span>
             </div>
             <div className="pt-2 border-t border-[var(--border-default)]">
               <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>Growth Trend</span>
