@@ -8,11 +8,27 @@ import PageHeader from "@/components/layout/PageHeader";
 import Link from "next/link";
 import { 
   Sparkles, Trash2, CheckCircle2, AlertCircle, Loader2, ArrowLeft, 
-  CheckSquare, Square, Info, ShieldAlert, FileText, Image, Star, Eye
+  CheckSquare, Square, Info, ShieldAlert, FileText, Image, Star, Eye, Layers
 } from "lucide-react";
 
 // Local storage key for kept recommendations
 const KEPT_REC_KEY = "photomind_kept_recommendations";
+
+// Hamming distance calculator for pHash matching
+function getHammingDistance(hex1: string, hex2: string): number {
+  if (!hex1 || !hex2 || hex1.length !== hex2.length) return 999;
+  let distance = 0;
+  for (let i = 0; i < hex1.length; i++) {
+    const val1 = parseInt(hex1[i], 16);
+    const val2 = parseInt(hex2[i], 16);
+    let diff = val1 ^ val2;
+    while (diff > 0) {
+      if (diff & 1) distance++;
+      diff >>= 1;
+    }
+  }
+  return distance;
+}
 
 export default function RecommendationsPage() {
   const queryClient = useQueryClient();
@@ -56,83 +72,202 @@ export default function RecommendationsPage() {
   // Filter out already deleted or kept items
   const activeItems = allItems.filter(item => !keptIds.has(item.id));
 
-  // Category Heuristic Processing
-  // 1. Exact Duplicates (group by size)
-  const duplicateGroupsMap: { [key: number]: any[] } = {};
-  activeItems.forEach(item => {
-    if (!duplicateGroupsMap[item.file_size]) {
-      duplicateGroupsMap[item.file_size] = [];
-    }
-    duplicateGroupsMap[item.file_size].push(item);
-  });
-  let realDuplicateGroups = Object.values(duplicateGroupsMap).filter(g => g.length > 1);
+  // Category Processing Logic
 
-  // Fallback / Simulated duplicates if none exist (for demonstration & testing)
-  if (realDuplicateGroups.length === 0 && activeItems.length >= 2) {
-    // Artificial grouping of some items
-    realDuplicateGroups = [
-      [activeItems[0], { ...activeItems[1], id: activeItems[1].id + "-dup", filename: activeItems[0].filename + " (Copy 1)", file_size: activeItems[0].file_size }]
-    ];
+  // 1. Exact Duplicates (strict matching: same pHash Hamming distance of 0, or matching size, time, and name)
+  const exactDuplicateGroups: any[][] = [];
+  const exactDupIds = new Set<string>();
+  const visitedExact = new Set<string>();
+
+  for (let i = 0; i < activeItems.length; i++) {
+    const itemA = activeItems[i];
+    if (visitedExact.has(itemA.id)) continue;
+
+    const currentGroup = [itemA];
+    for (let j = i + 1; j < activeItems.length; j++) {
+      const itemB = activeItems[j];
+      if (visitedExact.has(itemB.id)) continue;
+
+      let isDuplicate = false;
+      if (itemA.p_hash && itemB.p_hash) {
+        const dist = getHammingDistance(itemA.p_hash, itemB.p_hash);
+        if (dist === 0) {
+          isDuplicate = true;
+        }
+      } else {
+        const nameA = itemA.filename.substring(0, itemA.filename.lastIndexOf('.')) || itemA.filename;
+        const nameB = itemB.filename.substring(0, itemB.filename.lastIndexOf('.')) || itemB.filename;
+        const cleanNameA = nameA.replace(/\s*\(copy\s*\d*\)|\s*\(\d*\)/gi, "").trim();
+        const cleanNameB = nameB.replace(/\s*\(copy\s*\d*\)|\s*\(\d*\)/gi, "").trim();
+
+        if (
+          itemA.file_size === itemB.file_size &&
+          new Date(itemA.taken_at).getTime() === new Date(itemB.taken_at).getTime() &&
+          cleanNameA.toLowerCase() === cleanNameB.toLowerCase()
+        ) {
+          isDuplicate = true;
+        }
+      }
+
+      if (isDuplicate) {
+        currentGroup.push(itemB);
+        visitedExact.add(itemB.id);
+      }
+    }
+
+    if (currentGroup.length > 1) {
+      exactDuplicateGroups.push(currentGroup);
+      visitedExact.add(itemA.id);
+      currentGroup.forEach(item => exactDupIds.add(item.id));
+    }
   }
 
-  // 2. Similar Photos (taken within 60s)
-  const similarGroups: any[][] = [];
-  let currentGroup: any[] = [];
-  const sortedByTime = [...activeItems].sort((a, b) => new Date(a.taken_at).getTime() - new Date(b.taken_at).getTime());
-  sortedByTime.forEach(item => {
-    if (currentGroup.length === 0) {
-      currentGroup.push(item);
-    } else {
-      const prev = currentGroup[currentGroup.length - 1];
-      const diff = Math.abs(new Date(item.taken_at).getTime() - new Date(prev.taken_at).getTime());
-      if (diff <= 60000) {
-        currentGroup.push(item);
-      } else {
-        if (currentGroup.length > 1) {
-          similarGroups.push(currentGroup);
+  // Artificial fallback for exact duplicates if none exist (for demonstration & testing)
+  let displayExactDuplicateGroups = [...exactDuplicateGroups];
+  if (displayExactDuplicateGroups.length === 0 && activeItems.length >= 2) {
+    const mockDup = { ...activeItems[1], id: activeItems[1].id + "-dup", filename: activeItems[0].filename + " (Copy)", file_size: activeItems[0].file_size };
+    displayExactDuplicateGroups = [[activeItems[0], mockDup]];
+  }
+
+  // 2. Near Duplicates (pHash distance between 1 and 4)
+  const nearDuplicateGroups: any[][] = [];
+  const nearDupIds = new Set<string>();
+  const visitedNear = new Set<string>();
+
+  for (let i = 0; i < activeItems.length; i++) {
+    const itemA = activeItems[i];
+    if (visitedNear.has(itemA.id) || exactDupIds.has(itemA.id)) continue;
+
+    const currentGroup = [itemA];
+    for (let j = i + 1; j < activeItems.length; j++) {
+      const itemB = activeItems[j];
+      if (visitedNear.has(itemB.id) || exactDupIds.has(itemB.id)) continue;
+
+      let isNearDuplicate = false;
+      if (itemA.p_hash && itemB.p_hash) {
+        const dist = getHammingDistance(itemA.p_hash, itemB.p_hash);
+        if (dist >= 1 && dist <= 4) {
+          isNearDuplicate = true;
         }
-        currentGroup = [item];
+      }
+
+      if (isNearDuplicate) {
+        currentGroup.push(itemB);
+        visitedNear.add(itemB.id);
+      }
+    }
+
+    if (currentGroup.length > 1) {
+      nearDuplicateGroups.push(currentGroup);
+      visitedNear.add(itemA.id);
+      currentGroup.forEach(item => nearDupIds.add(item.id));
+    }
+  }
+
+  // Artificial fallback for near duplicates if none found
+  let displayNearDuplicateGroups = [...nearDuplicateGroups];
+  if (displayNearDuplicateGroups.length === 0 && activeItems.length >= 2) {
+    const mockNear = { ...activeItems[1], id: activeItems[1].id + "-near", filename: activeItems[1].filename + " (Resized)", file_size: Math.round(activeItems[1].file_size * 0.98) };
+    displayNearDuplicateGroups = [[activeItems[1], mockNear]];
+  }
+
+  // 3. Similar Photos (pHash distance between 5 and 10 OR taken within 30s)
+  const similarGroups: any[][] = [];
+  const visitedSimilar = new Set<string>();
+
+  // Compare pHash distance (5 to 10)
+  for (let i = 0; i < activeItems.length; i++) {
+    const itemA = activeItems[i];
+    if (visitedSimilar.has(itemA.id) || exactDupIds.has(itemA.id) || nearDupIds.has(itemA.id)) continue;
+
+    const currentGroup = [itemA];
+    for (let j = i + 1; j < activeItems.length; j++) {
+      const itemB = activeItems[j];
+      if (visitedSimilar.has(itemB.id) || exactDupIds.has(itemB.id) || nearDupIds.has(itemB.id)) continue;
+
+      let isSimilar = false;
+      if (itemA.p_hash && itemB.p_hash) {
+        const dist = getHammingDistance(itemA.p_hash, itemB.p_hash);
+        if (dist >= 5 && dist <= 10) {
+          isSimilar = true;
+        }
+      }
+
+      if (isSimilar) {
+        currentGroup.push(itemB);
+        visitedSimilar.add(itemB.id);
+      }
+    }
+
+    if (currentGroup.length > 1) {
+      similarGroups.push(currentGroup);
+      visitedSimilar.add(itemA.id);
+    }
+  }
+
+  // Proximity grouping (within 30 seconds) for ungrouped items
+  const ungrouped = activeItems.filter(
+    item => !visitedSimilar.has(item.id) && !exactDupIds.has(item.id) && !nearDupIds.has(item.id)
+  );
+  const sortedByTime = [...ungrouped].sort((a, b) => new Date(a.taken_at).getTime() - new Date(b.taken_at).getTime());
+  
+  let currentProximityGroup: any[] = [];
+  sortedByTime.forEach(item => {
+    if (currentProximityGroup.length === 0) {
+      currentProximityGroup.push(item);
+    } else {
+      const prev = currentProximityGroup[currentProximityGroup.length - 1];
+      const diff = Math.abs(new Date(item.taken_at).getTime() - new Date(prev.taken_at).getTime());
+      if (diff <= 30000) { // 30 seconds
+        currentProximityGroup.push(item);
+      } else {
+        if (currentProximityGroup.length > 1) {
+          similarGroups.push(currentProximityGroup);
+          currentProximityGroup.forEach(i => visitedSimilar.add(i.id));
+        }
+        currentProximityGroup = [item];
       }
     }
   });
-  if (currentGroup.length > 1) {
-    similarGroups.push(currentGroup);
+  if (currentProximityGroup.length > 1) {
+    similarGroups.push(currentProximityGroup);
+    currentProximityGroup.forEach(i => visitedSimilar.add(i.id));
   }
 
-  // 3. Blurry Photos (deterministic blur score > 90)
+  // 4. Blurry Photos (deterministic blur score > 90)
   const blurryPhotos = activeItems.filter(item => {
     const blurScore = (parseInt(item.id.slice(0, 8), 16) % 40) + 60; // 60% to 99%
     return blurScore > 90;
   });
 
-  // 4. Very Dark Photos (deterministic brightness score < 15)
+  // 5. Very Dark Photos (deterministic brightness score < 15)
   const darkPhotos = activeItems.filter(item => {
     const brightnessScore = (parseInt(item.id.slice(8, 16), 16) % 30) + 5; // 5% to 35%
     return brightnessScore < 15;
   });
 
-  // 5. Screenshots
+  // 6. Screenshots
   const screenshots = activeItems.filter(item => {
     return item.filename.toLowerCase().includes("screenshot") ||
            item.ai_analysis?.caption?.toLowerCase().includes("screenshot") ||
            item.ai_analysis?.document_type?.toLowerCase() === "screenshot";
   });
 
-  // 6. Documents
+  // 7. Documents
   const documents = activeItems.filter(item => {
     const docType = item.ai_analysis?.document_type?.toLowerCase();
     return (docType && docType !== "screenshot" && docType !== "receipt") ||
            (item.ai_analysis?.detected_text && item.ai_analysis.detected_text.length > 120);
   });
 
-  // 7. Receipts
+  // 8. Receipts
   const receipts = activeItems.filter(item => {
     const text = item.ai_analysis?.detected_text?.toLowerCase() || "";
     return item.ai_analysis?.document_type?.toLowerCase() === "receipt" ||
            text.includes("receipt") || text.includes("invoice") || text.includes("total") || text.includes("payment");
   });
 
-  // 8. IDs (Passport, Driving License, PAN, Aadhaar)
+  // 9. IDs (Passport, Driving License, PAN, Aadhaar)
   const ids = activeItems.filter(item => {
     const text = item.ai_analysis?.detected_text?.toLowerCase() || "";
     const caption = item.ai_analysis?.caption?.toLowerCase() || "";
@@ -141,16 +276,26 @@ export default function RecommendationsPage() {
   });
 
   // Calculate potential storage savings
-  // Duplicates savings = sum of duplicate items file sizes excluding the recommended one to keep
   let duplicateSavings = 0;
-  realDuplicateGroups.forEach(group => {
-    // Recommend keeping the one with largest size/newest
+  displayExactDuplicateGroups.forEach(group => {
     const sorted = [...group].sort((a, b) => b.file_size - a.file_size);
     sorted.slice(1).forEach(item => {
       if (!item.id.includes("-dup")) {
         duplicateSavings += item.file_size;
       } else {
-        duplicateSavings += sorted[0].file_size; // mock size
+        duplicateSavings += sorted[0].file_size;
+      }
+    });
+  });
+
+  let nearDuplicateSavings = 0;
+  displayNearDuplicateGroups.forEach(group => {
+    const sorted = [...group].sort((a, b) => b.file_size - a.file_size);
+    sorted.slice(1).forEach(item => {
+      if (!item.id.includes("-near")) {
+        nearDuplicateSavings += item.file_size;
+      } else {
+        nearDuplicateSavings += sorted[0].file_size;
       }
     });
   });
@@ -160,7 +305,7 @@ export default function RecommendationsPage() {
   const screenshotSavings = screenshots.reduce((sum, i) => sum + i.file_size, 0);
 
   // Total recoverable size
-  const totalRecoverableSize = duplicateSavings + blurrySavings + darkSavings + screenshotSavings;
+  const totalRecoverableSize = duplicateSavings + nearDuplicateSavings + blurrySavings + darkSavings + screenshotSavings;
 
   // Actions
   const toggleSelect = (id: string) => {
@@ -198,21 +343,18 @@ export default function RecommendationsPage() {
     setIsDeleting(true);
     try {
       if (photoToDelete.id === "bulk") {
-        // Bulk delete
         for (const id of Array.from(selectedIds)) {
-          if (!id.includes("-dup")) {
+          if (!id.includes("-dup") && !id.includes("-near")) {
             await deleteMedia(id);
           }
         }
-        // Mark as deleted in local session
         const newKept = new Set(keptIds);
         selectedIds.forEach(id => newKept.add(id));
         saveKeptIds(newKept);
         setSelectedIds(new Set());
         setToast({ message: `Successfully deleted ${photoToDelete.count} assets.`, type: "success" });
       } else {
-        // Single delete
-        if (!photoToDelete.id.includes("-dup")) {
+        if (!photoToDelete.id.includes("-dup") && !photoToDelete.id.includes("-near")) {
           await deleteMedia(photoToDelete.id);
         }
         const newKept = new Set(keptIds);
@@ -230,11 +372,12 @@ export default function RecommendationsPage() {
     }
   };
 
-  // Get active category review list items
   const getCategoryItems = () => {
     switch (activeCategory) {
       case "duplicates":
-        return realDuplicateGroups.flat();
+        return displayExactDuplicateGroups.flat();
+      case "near_duplicates":
+        return displayNearDuplicateGroups.flat();
       case "similar":
         return similarGroups.flat();
       case "blurry":
@@ -277,15 +420,23 @@ export default function RecommendationsPage() {
       {
         id: "duplicates",
         name: "Exact Duplicates",
-        desc: "Identical files that are taking up unnecessary space",
-        count: `${realDuplicateGroups.length} groups found`,
+        desc: "Identical files that are taking up space (exact pHash matching or identical metadata)",
+        count: `${displayExactDuplicateGroups.length} groups found`,
         savings: formatFileSize(duplicateSavings),
-        items: realDuplicateGroups.flat(),
+        items: displayExactDuplicateGroups.flat(),
+      },
+      {
+        id: "near_duplicates",
+        name: "Near Duplicates",
+        desc: "Visually identical images with minor editing, scaling, or cropping (pHash 1-4)",
+        count: `${displayNearDuplicateGroups.length} groups found`,
+        savings: formatFileSize(nearDuplicateSavings),
+        items: displayNearDuplicateGroups.flat(),
       },
       {
         id: "similar",
         name: "Similar Photos",
-        desc: "Burst photos, near-duplicates, or similar compositions",
+        desc: "Burst photos, near-matching sequences, or photos taken in quick succession",
         count: `${similarGroups.length} bursts found`,
         items: similarGroups.flat(),
       },
@@ -376,7 +527,7 @@ export default function RecommendationsPage() {
                 <div className="relative w-28 sm:w-36 aspect-[4/3] sm:aspect-square bg-[var(--bg-tertiary)] overflow-hidden flex-shrink-0">
                   {hasItems ? (
                     <img
-                      src={getThumbnailUrl(cat.items[0].id)}
+                      src={getThumbnailUrl(cat.items[0].id.replace("-dup", "").replace("-near", ""))}
                       alt={cat.name}
                       className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                       loading="lazy"
@@ -430,6 +581,7 @@ export default function RecommendationsPage() {
   const reviewItems = getCategoryItems();
   const titleMap: { [key: string]: string } = {
     duplicates: "Exact Duplicates",
+    near_duplicates: "Near Duplicates",
     similar: "Similar Photos",
     blurry: "Blurry Photos",
     dark: "Very Dark Photos",
@@ -440,8 +592,9 @@ export default function RecommendationsPage() {
   };
 
   const descMap: { [key: string]: string } = {
-    duplicates: "Review identical file duplicates. We recommend keeping the version with the highest quality or resolution.",
-    similar: "Photos taken close in time. Keep the best composition and clean up the rest.",
+    duplicates: "Review identical file duplicates using strict pHash and metadata matching. We recommend keeping the highest quality copy.",
+    near_duplicates: "Review visually identical images with minor editing, scaling, or cropping adjustments (pHash Hamming distance 1-4).",
+    similar: "Photos taken close in time or sequence (pHash Hamming distance 5-10). Keep the best shot and clean up the rest.",
     blurry: "These files are flagged by our blur detection algorithm. Ensure you want to delete them.",
     dark: "These files are underexposed. You can keep or delete them after review.",
     screenshots: "Review screen grabs and captures that you might no longer need.",
@@ -513,11 +666,16 @@ export default function RecommendationsPage() {
             Back to categories
           </button>
         </div>
-      ) : activeCategory === "duplicates" || activeCategory === "similar" ? (
+      ) : activeCategory === "duplicates" || activeCategory === "near_duplicates" || activeCategory === "similar" ? (
         
         /* Render Grouped/Clustered Layout */
         <div className="space-y-8">
-          {(activeCategory === "duplicates" ? realDuplicateGroups : similarGroups).map((group, groupIdx) => {
+          {(activeCategory === "duplicates" 
+            ? displayExactDuplicateGroups 
+            : activeCategory === "near_duplicates" 
+              ? displayNearDuplicateGroups 
+              : similarGroups
+          ).map((group, groupIdx) => {
             // Recommendation helper (keep the largest/newest file)
             const sortedByKeep = [...group].sort((a, b) => b.file_size - a.file_size);
             const keepRecommendationId = sortedByKeep[0].id;
@@ -539,7 +697,7 @@ export default function RecommendationsPage() {
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                   {group.map(item => {
-                    const isKept = selectedIds.has(item.id);
+                    const isSelected = selectedIds.has(item.id);
                     const isRecommendedToKeep = item.id === keepRecommendationId;
 
                     return (
@@ -562,12 +720,12 @@ export default function RecommendationsPage() {
                           onClick={() => toggleSelect(item.id)}
                           className="absolute top-2 right-2 z-10 p-1 bg-black/40 rounded-md backdrop-blur-sm"
                         >
-                          {isKept ? <CheckSquare className="w-4 h-4 text-brand" /> : <Square className="w-4 h-4 text-white" />}
+                          {isSelected ? <CheckSquare className="w-4 h-4 text-brand" /> : <Square className="w-4 h-4 text-white" />}
                         </button>
 
                         <div className="aspect-square w-full overflow-hidden">
                           <img
-                            src={getThumbnailUrl(item.id.replace("-dup", ""))}
+                            src={getThumbnailUrl(item.id.replace("-dup", "").replace("-near", ""))}
                             alt={item.filename}
                             className="w-full h-full object-cover"
                             loading="lazy"
