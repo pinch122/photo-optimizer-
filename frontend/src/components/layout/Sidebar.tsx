@@ -14,6 +14,7 @@ import {
   Brain,
   PanelLeftClose,
   PanelLeft,
+  Sparkles,
 } from "lucide-react";
 import { useState } from "react";
 
@@ -23,6 +24,7 @@ const navItems = [
   { href: "/upload", label: "Upload", icon: Upload },
   { href: "/search", label: "Search", icon: Search },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
+  { href: "/recommendations", label: "Recommendations", icon: Sparkles },
   { href: "/collections", label: "Collections", icon: FolderOpen },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
