@@ -36,136 +36,122 @@ interface SimilarityMatch {
   explanation: string;
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/** Extract a normalised root token from a filename, e.g. dark_0021_362.jpg → "362" */
+/** Extract the base subject token from a filename, e.g. dark_0021_362.jpg → "362" */
 function extractFilenameRoot(fn: string): string {
   if (!fn) return "";
-  const withoutPrefix = fn.replace(/^(dark|bright|cropped|rotated|resized|blurred)_+\d*_*/i, "");
+  // Strip known variation prefixes + leading index numbers
+  const withoutPrefix = fn
+    .replace(/^(dark|bright|cropped|rotated|resized|blurred)_+\d*_*/i, "")
+    .replace(/^\d+_/, "");
   const base = withoutPrefix.substring(0, withoutPrefix.lastIndexOf(".")) || withoutPrefix;
   const parts = base.split(/[_\-]/);
   return parts[parts.length - 1].toLowerCase();
 }
 
-/** Compute Jaccard word-overlap for two caption strings (min word length 4) */
+/** Jaccard word-overlap for caption strings (words > 3 chars) */
 function captionJaccard(capA: string, capB: string): number {
   if (!capA || !capB) return 0;
   const wA = capA.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
   const wB = capB.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
   const setB = new Set<string>(wB);
-  const intersection = wA.filter((w) => setB.has(w));
+  const inter = wA.filter((w) => setB.has(w));
   const union = new Set<string>([...wA, ...wB]);
-  return union.size > 0 ? intersection.length / union.size : 0;
+  return union.size > 0 ? inter.length / union.size : 0;
 }
 
-// ─── Stage 1: Candidate Generation ─────────────────────────────────────────
-// A pair is a candidate when it passes AT LEAST ONE broad gate:
-//   • pHash Hamming distance ≤ 10   (visually similar)
-//   • Temporal proximity ≤ 120 s    (captured in the same burst / session)
-// Both conditions are checked without requiring the other.
-
-function isCandidatePair(itemA: any, itemB: any): { passVisual: boolean; timeDiffSec: number } {
-  const timeDiffSec = Math.abs(
-    new Date(itemA.taken_at).getTime() - new Date(itemB.taken_at).getTime()
-  ) / 1000;
-
-  const passTime = timeDiffSec <= 120;
-
-  let passVisual = false;
-  if (itemA.p_hash && itemB.p_hash) {
-    passVisual = getHammingDistance(itemA.p_hash, itemB.p_hash) <= 10;
+/**
+ * Evaluate whether two photos represent the same capture moment.
+ *
+ * GATES (both must pass):
+ *   • pHash Hamming distance ≤ 8  (high visual similarity)
+ *   • Temporal proximity ≤ 30 s   (same burst / session)
+ *
+ * HARD REJECTION (fires only when AI data is present on both sides):
+ *   • Both items have non-empty object lists AND they share zero objects
+ *     AND both have non-null scenes that differ  →  clearly different subjects
+ *
+ * CONFIDENCE BOOSTERS (additive, never required):
+ *   • Tighter pHash distance
+ *   • Closer timestamp
+ *   • Shared objects / scene / caption / filename root
+ */
+function calculateSimilarShotMatch(itemA: any, itemB: any): SimilarityMatch {
+  // ── Gate 1: pHash must exist on both and be ≤ 8 ──────────────────────────
+  if (!itemA.p_hash || !itemB.p_hash) {
+    return { isMatch: false, confidence: 0, explanation: "" };
   }
-
-  return { passVisual, timeDiffSec };
-}
-
-// ─── Stage 2: Validation via AI signals ─────────────────────────────────────
-// Score each candidate pair using multiple independent signals.
-// Each signal adds to a confidence score (0–100).
-// A pair is accepted only when confidence ≥ MIN_CONFIDENCE.
-//
-// Signal weights (all checked independently, not mutually exclusive):
-//   Visual pHash distance        → up to 30 pts  (mandatory to continue if pHash available)
-//   Temporal proximity           → up to 20 pts
-//   Matching objects             → 25 pts
-//   Matching scene               → 20 pts
-//   Caption Jaccard ≥ 0.15       → 10 pts
-//   Filename root match          → 20 pts
-
-const MIN_CONFIDENCE = 60; // minimum total score to accept a pair
-
-function validateCandidatePair(itemA: any, itemB: any): SimilarityMatch {
-  const { passVisual, timeDiffSec } = isCandidatePair(itemA, itemB);
-
-  // If neither broad gate is satisfied, reject immediately
-  const passTime = timeDiffSec <= 120;
-  if (!passVisual && !passTime) {
+  const dist = getHammingDistance(itemA.p_hash, itemB.p_hash);
+  if (dist > 8) {
     return { isMatch: false, confidence: 0, explanation: "" };
   }
 
-  // If both have pHash and they are not visually similar at all (dist > 15), reject
-  if (itemA.p_hash && itemB.p_hash) {
-    const dist = getHammingDistance(itemA.p_hash, itemB.p_hash);
-    if (dist > 15) {
-      return { isMatch: false, confidence: 0, explanation: "" };
-    }
+  // ── Gate 2: Temporal proximity ≤ 30 s ────────────────────────────────────
+  const timeDiffSec =
+    Math.abs(new Date(itemA.taken_at).getTime() - new Date(itemB.taken_at).getTime()) / 1000;
+  if (timeDiffSec > 30) {
+    return { isMatch: false, confidence: 0, explanation: "" };
   }
 
-  let score = 0;
-  const reasons: string[] = [];
-
-  // — Visual signal ————————————————————————————————
-  if (itemA.p_hash && itemB.p_hash) {
-    const dist = getHammingDistance(itemA.p_hash, itemB.p_hash);
-    if (dist <= 4)       { score += 30; reasons.push("are visually near-identical"); }
-    else if (dist <= 8)  { score += 22; reasons.push("have very high visual similarity"); }
-    else if (dist <= 12) { score += 14; reasons.push("have high visual similarity"); }
-    else                 { score +=  6; reasons.push("share visual features"); }
-  }
-
-  // — Temporal signal ——————————————————————————————
-  if (timeDiffSec <= 5)        { score += 20; reasons.push(`taken ${Math.round(timeDiffSec)}s apart`); }
-  else if (timeDiffSec <= 15)  { score += 17; reasons.push(`taken ${Math.round(timeDiffSec)} seconds apart`); }
-  else if (timeDiffSec <= 30)  { score += 14; reasons.push(`taken ${Math.round(timeDiffSec)} seconds apart`); }
-  else if (timeDiffSec <= 60)  { score +=  9; reasons.push(`taken within a minute`); }
-  else if (timeDiffSec <= 120) { score +=  4; reasons.push(`taken within 2 minutes`); }
-
-  // — Object signal ————————————————————————————————
+  // ── Collect AI analysis fields ────────────────────────────────────────────
   const objsA: string[] = itemA.ai_analysis?.objects ?? [];
   const objsB: string[] = itemB.ai_analysis?.objects ?? [];
-  const commonObjs = objsA.filter((o) => objsB.includes(o));
-  if (commonObjs.length >= 2) { score += 25; reasons.push(`both contain ${commonObjs.slice(0, 2).join(" and ")}`); }
-  else if (commonObjs.length === 1) { score += 18; reasons.push(`both feature a ${commonObjs[0]}`); }
+  const sceneA = (itemA.ai_analysis?.scene ?? "").toLowerCase().trim();
+  const sceneB = (itemB.ai_analysis?.scene ?? "").toLowerCase().trim();
+  const capA: string = itemA.ai_analysis?.caption ?? "";
+  const capB: string = itemB.ai_analysis?.caption ?? "";
 
-  // — Scene signal —————————————————————————————————
-  const sceneA: string = itemA.ai_analysis?.scene ?? "";
-  const sceneB: string = itemB.ai_analysis?.scene ?? "";
-  if (sceneA && sceneB && sceneA.toLowerCase().trim() === sceneB.toLowerCase().trim()) {
-    score += 20;
-    reasons.push(`in the same ${sceneA.toLowerCase().trim()} setting`);
+  // ── Hard rejection: conflicting subject evidence ──────────────────────────
+  // Only fires when BOTH sides have meaningful AI data and it clearly conflicts.
+  const bothHaveObjects = objsA.length > 0 && objsB.length > 0;
+  const objectsConflict = bothHaveObjects && objsA.filter((o) => objsB.includes(o)).length === 0;
+  const bothHaveScene = sceneA.length > 0 && sceneB.length > 0;
+  const scenesConflict = bothHaveScene && sceneA !== sceneB;
+  if (objectsConflict && scenesConflict) {
+    return { isMatch: false, confidence: 0, explanation: "" };
   }
 
-  // — Caption Jaccard signal ————————————————————————
-  const jaccard = captionJaccard(
-    itemA.ai_analysis?.caption ?? "",
-    itemB.ai_analysis?.caption ?? ""
-  );
-  if (jaccard >= 0.35)      { score += 10; reasons.push("share very similar descriptions"); }
-  else if (jaccard >= 0.15) { score +=  5; reasons.push("have related captions"); }
+  // ── Confidence boosters ───────────────────────────────────────────────────
+  let confidence = 60; // baseline: both visual AND time gates passed
+  const reasons: string[] = [];
 
-  // — Filename root signal ——————————————————————————
+  // Visual strength
+  if (dist <= 2)      { confidence += 20; reasons.push("are visually near-identical"); }
+  else if (dist <= 4) { confidence += 14; reasons.push("have very high visual similarity"); }
+  else if (dist <= 6) { confidence +=  8; reasons.push("have high visual similarity"); }
+  else                { reasons.push("share visual features"); }
+
+  // Temporal strength
+  if (timeDiffSec <= 5)       { confidence += 15; reasons.push(`taken ${Math.round(timeDiffSec)}s apart`); }
+  else if (timeDiffSec <= 15) { confidence += 10; reasons.push(`taken ${Math.round(timeDiffSec)} seconds apart`); }
+  else                        { confidence +=  5; reasons.push(`taken ${Math.round(timeDiffSec)} seconds apart`); }
+
+  // Shared objects
+  const commonObjs = objsA.filter((o) => objsB.includes(o));
+  if (commonObjs.length >= 2) { confidence += 15; reasons.push(`both contain ${commonObjs.slice(0, 2).join(" and ")}`); }
+  else if (commonObjs.length === 1) { confidence += 10; reasons.push(`both feature a ${commonObjs[0]}`); }
+
+  // Shared scene
+  if (sceneA && sceneB && sceneA === sceneB) {
+    confidence += 10;
+    reasons.push(`in the same ${sceneA} setting`);
+  }
+
+  // Filename root match (e.g. dark_0021_362.jpg + bright_0037_362.jpg → root "362")
   const rootA = extractFilenameRoot(itemA.filename);
   const rootB = extractFilenameRoot(itemB.filename);
   if (rootA && rootB && rootA === rootB) {
-    score += 20;
+    confidence += 10;
     reasons.push("are sequential captures of the same source");
   }
 
-  if (score < MIN_CONFIDENCE) {
-    return { isMatch: false, confidence: 0, explanation: "" };
-  }
+  // Caption similarity
+  const jac = captionJaccard(capA, capB);
+  if (jac >= 0.35)      { confidence += 8; reasons.push("share very similar descriptions"); }
+  else if (jac >= 0.15) { confidence += 4; reasons.push("have related captions"); }
 
-  // Build natural-language explanation
+  confidence = Math.min(99, confidence);
+
+  // ── Build explanation ─────────────────────────────────────────────────────
   let explanation = "";
   if (reasons.length >= 2) {
     const last = reasons[reasons.length - 1];
@@ -178,14 +164,10 @@ function validateCandidatePair(itemA: any, itemB: any): SimilarityMatch {
   }
   explanation = explanation.charAt(0).toUpperCase() + explanation.slice(1);
 
-  // Clamp confidence to 0-99
-  const confidence = Math.min(99, score);
-
   return { isMatch: true, confidence, explanation };
 }
 
-// ─── Two-Stage Grouping Entry Point ─────────────────────────────────────────
-
+/** Build groups using the calibrated similar-shot matcher */
 function groupSimilarPhotos(
   items: any[],
   exactDupIds: Set<string>,
@@ -193,8 +175,7 @@ function groupSimilarPhotos(
 ): { group: any[]; explanation: string; confidence: number }[] {
   const groups: { group: any[]; explanation: string; confidence: number }[] = [];
   const visited = new Set<string>();
-
-  const pool = items.filter((item) => !exactDupIds.has(item.id) && !nearDupIds.has(item.id));
+  const pool = items.filter((it) => !exactDupIds.has(it.id) && !nearDupIds.has(it.id));
 
   for (let i = 0; i < pool.length; i++) {
     const seed = pool[i];
@@ -208,12 +189,7 @@ function groupSimilarPhotos(
       const candidate = pool[j];
       if (visited.has(candidate.id)) continue;
 
-      // Stage 1 – quick broad filter
-      const { passVisual, timeDiffSec } = isCandidatePair(seed, candidate);
-      if (!passVisual && timeDiffSec > 120) continue;
-
-      // Stage 2 – full validation
-      const result = validateCandidatePair(seed, candidate);
+      const result = calculateSimilarShotMatch(seed, candidate);
       if (result.isMatch) {
         currentGroup.push(candidate);
         visited.add(candidate.id);
@@ -225,11 +201,7 @@ function groupSimilarPhotos(
     }
 
     if (currentGroup.length > 1) {
-      groups.push({
-        group: currentGroup,
-        explanation: bestExplanation,
-        confidence: bestConfidence,
-      });
+      groups.push({ group: currentGroup, explanation: bestExplanation, confidence: bestConfidence });
       visited.add(seed.id);
     }
   }
