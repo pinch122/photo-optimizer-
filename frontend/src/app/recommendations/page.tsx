@@ -30,184 +30,400 @@ function getHammingDistance(hex1: string, hex2: string): number {
   return distance;
 }
 
-interface SimilarityMatch {
-  isMatch: boolean;
-  confidence: number;
-  explanation: string;
+// ════════════════════════════════════════════════════════════════════════════
+//  SIMILAR PHOTOS — TWO-STAGE RECOMMENDATION ENGINE
+//
+//  Goal: "Help users choose the best photo from multiple captures of the
+//         SAME subject or SAME capture moment."
+//
+//  NOT a generic image similarity engine.
+//  Visual similarity alone is NEVER sufficient to form a recommendation.
+// ════════════════════════════════════════════════════════════════════════════
+
+const MIN_RECOMMENDATION_CONFIDENCE = 80;
+const MAX_GROUP_SIZE = 5;
+
+// ─── Utility: Filename ────────────────────────────────────────────────────────
+
+/** Known variation prefixes that indicate the file is a processed copy */
+const VARIATION_PREFIXES = /^(dark|bright|cropped|rotated|resized|blurred|edited|compressed|scaled|small|thumb)_+/i;
+
+function isOriginalFile(filename: string): boolean {
+  return !VARIATION_PREFIXES.test(filename.toLowerCase());
 }
 
-/** Extract the base subject token from a filename, e.g. dark_0021_362.jpg → "362" */
+/** Extract the base subject token: dark_0021_362.jpg → "362" */
 function extractFilenameRoot(fn: string): string {
   if (!fn) return "";
-  // Strip known variation prefixes + leading index numbers
-  const withoutPrefix = fn
-    .replace(/^(dark|bright|cropped|rotated|resized|blurred)_+\d*_*/i, "")
+  const stripped = fn
+    .replace(VARIATION_PREFIXES, "")
     .replace(/^\d+_/, "");
-  const base = withoutPrefix.substring(0, withoutPrefix.lastIndexOf(".")) || withoutPrefix;
+  const base = stripped.substring(0, stripped.lastIndexOf(".")) || stripped;
   const parts = base.split(/[_\-]/);
   return parts[parts.length - 1].toLowerCase();
 }
 
-/** Jaccard word-overlap for caption strings (words > 3 chars) */
-function captionJaccard(capA: string, capB: string): number {
-  if (!capA || !capB) return 0;
-  const wA = capA.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
-  const wB = capB.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
-  const setB = new Set<string>(wB);
-  const inter = wA.filter((w) => setB.has(w));
-  const union = new Set<string>([...wA, ...wB]);
-  return union.size > 0 ? inter.length / union.size : 0;
+// ─── Utility: Subject Signature ───────────────────────────────────────────────
+
+interface SubjectSignature {
+  objects: Set<string>;
+  activities: Set<string>;
+  scene: string;
+  indoorOutdoor: string;
+  documentType: string;
+  eventType: string;
+  peopleCount: number | null;
+  dominantNouns: Set<string>;
+  hasAIData: boolean;
 }
 
-/**
- * Evaluate whether two photos represent the same capture moment.
- *
- * GATES (both must pass):
- *   • pHash Hamming distance ≤ 8  (high visual similarity)
- *   • Temporal proximity ≤ 30 s   (same burst / session)
- *
- * HARD REJECTION (fires only when AI data is present on both sides):
- *   • Both items have non-empty object lists AND they share zero objects
- *     AND both have non-null scenes that differ  →  clearly different subjects
- *
- * CONFIDENCE BOOSTERS (additive, never required):
- *   • Tighter pHash distance
- *   • Closer timestamp
- *   • Shared objects / scene / caption / filename root
- */
-function calculateSimilarShotMatch(itemA: any, itemB: any): SimilarityMatch {
-  // ── Gate 1: pHash must exist on both and be ≤ 8 ──────────────────────────
-  if (!itemA.p_hash || !itemB.p_hash) {
-    return { isMatch: false, confidence: 0, explanation: "" };
-  }
-  const dist = getHammingDistance(itemA.p_hash, itemB.p_hash);
-  if (dist > 8) {
-    return { isMatch: false, confidence: 0, explanation: "" };
+const CAPTION_STOPWORDS = new Set([
+  "the","a","an","in","on","at","of","is","are","was","were","be","to","and","or","but",
+  "with","for","this","that","from","by","as","it","its","not","has","have","had","been",
+  "which","who","they","their","there","here","some","into","than","then","also","more",
+  "very","just","over","out","can","will","would","could","should","may","might","does",
+  "did","do","him","her","his","she","he","we","you","your","what","when","where","how",
+  "each","all","both","these","those","such","other","another","being","photo","image",
+  "picture","taken","shows","showing","scene","foreground","background","light","color",
+  "visible","appears","appear","seen","view","shot","camera","left","right","top","bottom",
+  "front","back","side","behind","looking","facing","standing","sitting","positioned"
+]);
+
+/** Extract meaningful nouns from caption / detailed description */
+function extractDominantNouns(text: string): Set<string> {
+  if (!text) return new Set();
+  const words = text.toLowerCase()
+    .replace(/[^a-z\s]/g, " ")
+    .split(/\s+/)
+    .filter(w => w.length > 3 && !CAPTION_STOPWORDS.has(w));
+  return new Set(words.slice(0, 12)); // top 12 meaningful words
+}
+
+function buildSubjectSignature(item: any): SubjectSignature {
+  const ai = item.ai_analysis;
+  const hasAIData = !!(ai && (
+    (ai.objects && ai.objects.length > 0) ||
+    ai.scene ||
+    ai.caption ||
+    ai.document_type ||
+    ai.event_type
+  ));
+
+  return {
+    objects:        new Set<string>((ai?.objects ?? []).map((o: string) => o.toLowerCase())),
+    activities:     new Set<string>((ai?.activities ?? []).map((a: string) => a.toLowerCase())),
+    scene:          (ai?.scene ?? "").toLowerCase().trim(),
+    indoorOutdoor:  (ai?.indoor_outdoor ?? "").toLowerCase().trim(),
+    documentType:   (ai?.document_type ?? "").toLowerCase().trim(),
+    eventType:      (ai?.event_type ?? "").toLowerCase().trim(),
+    peopleCount:    ai?.people_count ?? null,
+    dominantNouns:  extractDominantNouns((ai?.caption ?? "") + " " + (ai?.detailed_description ?? "")),
+    hasAIData,
+  };
+}
+
+function setIntersectionSize(a: Set<string>, b: Set<string>): number {
+  return Array.from(a).filter(item => b.has(item)).length;
+}
+
+// ─── Stage 1: Candidate Generation (HIGH RECALL) ─────────────────────────────
+//
+// Emit a candidate pair if ANY of these fire.
+// Over-generation is acceptable here — Stage 2 will filter.
+
+function isCandidatePair(a: any, b: any): boolean {
+  const timeDiffSec = Math.abs(
+    new Date(a.taken_at).getTime() - new Date(b.taken_at).getTime()
+  ) / 1000;
+
+  // Burst: definitely same moment
+  if (timeDiffSec <= 10) return true;
+
+  // Filename root: same base image, different processing
+  const rootA = extractFilenameRoot(a.filename);
+  const rootB = extractFilenameRoot(b.filename);
+  if (rootA && rootB && rootA === rootB) return true;
+
+  // Visual signals
+  if (a.p_hash && b.p_hash) {
+    const dist = getHammingDistance(a.p_hash, b.p_hash);
+    if (dist <= 10) return true;                    // near-identical
+    if (dist <= 12 && timeDiffSec <= 60) return true; // similar + close in time
   }
 
-  // ── Gate 2: Temporal proximity ≤ 30 s ────────────────────────────────────
-  const timeDiffSec =
-    Math.abs(new Date(itemA.taken_at).getTime() - new Date(itemB.taken_at).getTime()) / 1000;
-  if (timeDiffSec > 30) {
-    return { isMatch: false, confidence: 0, explanation: "" };
+  return false;
+}
+
+// ─── Stage 2: AI Validation (HIGH PRECISION) ─────────────────────────────────
+//
+// Answer ONE question: "If I showed these to a human, would they choose one
+// and delete the others?"
+//
+// Returns { valid, confidence, groupReason }
+
+interface ValidationResult {
+  valid: boolean;
+  confidence: number;
+  groupReason: string;
+}
+
+function validatePair(a: any, b: any): ValidationResult {
+  const sigA = buildSubjectSignature(a);
+  const sigB = buildSubjectSignature(b);
+
+  const timeDiffSec = Math.abs(
+    new Date(a.taken_at).getTime() - new Date(b.taken_at).getTime()
+  ) / 1000;
+  const dist = (a.p_hash && b.p_hash) ? getHammingDistance(a.p_hash, b.p_hash) : 999;
+
+  // ── CASE A: No AI data on either side ────────────────────────────────────
+  // Very conservative: only accept near-identical or true burst
+  if (!sigA.hasAIData && !sigB.hasAIData) {
+    if (dist <= 4) return { valid: true, confidence: 82, groupReason: "visually near-identical photos" };
+    if (timeDiffSec <= 5) return { valid: true, confidence: 81, groupReason: "burst sequence captures" };
+    return { valid: false, confidence: 0, groupReason: "" };
   }
 
-  // ── Collect AI analysis fields ────────────────────────────────────────────
-  const objsA: string[] = itemA.ai_analysis?.objects ?? [];
-  const objsB: string[] = itemB.ai_analysis?.objects ?? [];
-  const sceneA = (itemA.ai_analysis?.scene ?? "").toLowerCase().trim();
-  const sceneB = (itemB.ai_analysis?.scene ?? "").toLowerCase().trim();
-  const capA: string = itemA.ai_analysis?.caption ?? "";
-  const capB: string = itemB.ai_analysis?.caption ?? "";
+  // ── HARD REJECTIONS (require AI data on both sides) ───────────────────────
+  if (sigA.hasAIData && sigB.hasAIData) {
+    const objectConflict = sigA.objects.size > 0 && sigB.objects.size > 0
+      && setIntersectionSize(sigA.objects, sigB.objects) === 0;
+    const sceneConflict = sigA.scene && sigB.scene && sigA.scene !== sigB.scene;
+    const documentConflict = sigA.documentType && sigB.documentType
+      && sigA.documentType !== sigB.documentType;
+    const peopleConflict = sigA.peopleCount !== null && sigB.peopleCount !== null
+      && Math.abs(sigA.peopleCount - sigB.peopleCount) > 2
+      && objectConflict;
 
-  // ── Hard rejection: conflicting subject evidence ──────────────────────────
-  // Only fires when BOTH sides have meaningful AI data and it clearly conflicts.
-  const bothHaveObjects = objsA.length > 0 && objsB.length > 0;
-  const objectsConflict = bothHaveObjects && objsA.filter((o) => objsB.includes(o)).length === 0;
-  const bothHaveScene = sceneA.length > 0 && sceneB.length > 0;
-  const scenesConflict = bothHaveScene && sceneA !== sceneB;
-  if (objectsConflict && scenesConflict) {
-    return { isMatch: false, confidence: 0, explanation: "" };
+    // Beach ↔ City / Clock ↔ Grass pattern: objects AND scene both conflict
+    if (objectConflict && sceneConflict) {
+      return { valid: false, confidence: 0, groupReason: "" };
+    }
+    // Passport ↔ Receipt: document types conflict
+    if (documentConflict) {
+      return { valid: false, confidence: 0, groupReason: "" };
+    }
+    // Different people count + different objects
+    if (peopleConflict) {
+      return { valid: false, confidence: 0, groupReason: "" };
+    }
   }
 
-  // ── Confidence boosters ───────────────────────────────────────────────────
-  let confidence = 60; // baseline: both visual AND time gates passed
+  // ── BUILD CONFIDENCE SCORE from acceptance signals ────────────────────────
+  let confidence = 80; // baseline — candidate already passed Stage 1
   const reasons: string[] = [];
 
-  // Visual strength
-  if (dist <= 2)      { confidence += 20; reasons.push("are visually near-identical"); }
-  else if (dist <= 4) { confidence += 14; reasons.push("have very high visual similarity"); }
-  else if (dist <= 6) { confidence +=  8; reasons.push("have high visual similarity"); }
-  else                { reasons.push("share visual features"); }
-
-  // Temporal strength
-  if (timeDiffSec <= 5)       { confidence += 15; reasons.push(`taken ${Math.round(timeDiffSec)}s apart`); }
-  else if (timeDiffSec <= 15) { confidence += 10; reasons.push(`taken ${Math.round(timeDiffSec)} seconds apart`); }
-  else                        { confidence +=  5; reasons.push(`taken ${Math.round(timeDiffSec)} seconds apart`); }
-
-  // Shared objects
-  const commonObjs = objsA.filter((o) => objsB.includes(o));
-  if (commonObjs.length >= 2) { confidence += 15; reasons.push(`both contain ${commonObjs.slice(0, 2).join(" and ")}`); }
-  else if (commonObjs.length === 1) { confidence += 10; reasons.push(`both feature a ${commonObjs[0]}`); }
-
-  // Shared scene
-  if (sceneA && sceneB && sceneA === sceneB) {
-    confidence += 10;
-    reasons.push(`in the same ${sceneA} setting`);
+  // Signal: same dominant objects (strongest AI signal)
+  const commonObjects = setIntersectionSize(sigA.objects, sigB.objects);
+  const commonObjectsList = Array.from(sigA.objects).filter(o => sigB.objects.has(o));
+  if (commonObjects >= 2) {
+    confidence += 12;
+    reasons.push(`same subjects (${commonObjectsList.slice(0, 2).join(", ")})`);
+  } else if (commonObjects === 1) {
+    confidence += 8;
+    reasons.push(`same subject (${commonObjectsList[0]})`);
   }
 
-  // Filename root match (e.g. dark_0021_362.jpg + bright_0037_362.jpg → root "362")
-  const rootA = extractFilenameRoot(itemA.filename);
-  const rootB = extractFilenameRoot(itemB.filename);
+  // Signal: shared activities
+  const commonActivities = setIntersectionSize(sigA.activities, sigB.activities);
+  if (commonActivities >= 1) {
+    confidence += 6;
+    reasons.push("same activity");
+  }
+
+  // Signal: same scene
+  if (sigA.scene && sigB.scene && sigA.scene === sigB.scene) {
+    confidence += 8;
+    reasons.push(`same ${sigA.scene} scene`);
+  }
+
+  // Signal: same environment (indoor/outdoor)
+  if (sigA.indoorOutdoor && sigB.indoorOutdoor && sigA.indoorOutdoor === sigB.indoorOutdoor) {
+    confidence += 4;
+  }
+
+  // Signal: same event type (wedding, concert, etc.)
+  if (sigA.eventType && sigB.eventType && sigA.eventType === sigB.eventType) {
+    confidence += 9;
+    reasons.push(`same event (${sigA.eventType})`);
+  }
+
+  // Signal: same document type
+  if (sigA.documentType && sigB.documentType && sigA.documentType === sigB.documentType) {
+    confidence += 10;
+    reasons.push(`same document (${sigA.documentType})`);
+  }
+
+  // Signal: shared noun overlap from captions (dominant subject in prose)
+  const nounOverlap = setIntersectionSize(sigA.dominantNouns, sigB.dominantNouns);
+  if (nounOverlap >= 3) {
+    confidence += 7;
+    reasons.push("similar photo descriptions");
+  } else if (nounOverlap >= 1 && commonObjects === 0) {
+    confidence += 3;
+  }
+
+  // Signal: burst / tight timing
+  if (timeDiffSec <= 5) {
+    confidence += 8;
+    reasons.push(`taken ${Math.round(timeDiffSec)}s apart`);
+  } else if (timeDiffSec <= 15) {
+    confidence += 6;
+    reasons.push(`taken ${Math.round(timeDiffSec)} seconds apart`);
+  } else if (timeDiffSec <= 30) {
+    confidence += 4;
+    reasons.push(`taken ${Math.round(timeDiffSec)} seconds apart`);
+  }
+
+  // Signal: pHash visual strength
+  if (dist <= 4) {
+    confidence += 10;
+    if (!reasons.some(r => r.includes("near"))) reasons.push("visually near-identical");
+  } else if (dist <= 8) {
+    confidence += 6;
+  }
+
+  // Signal: filename root (same base image, different processing variant)
+  const rootA = extractFilenameRoot(a.filename);
+  const rootB = extractFilenameRoot(b.filename);
   if (rootA && rootB && rootA === rootB) {
-    confidence += 10;
-    reasons.push("are sequential captures of the same source");
+    confidence += 5;
+    reasons.push("sequential captures of the same source");
   }
-
-  // Caption similarity
-  const jac = captionJaccard(capA, capB);
-  if (jac >= 0.35)      { confidence += 8; reasons.push("share very similar descriptions"); }
-  else if (jac >= 0.15) { confidence += 4; reasons.push("have related captions"); }
 
   confidence = Math.min(99, confidence);
 
-  // ── Build explanation ─────────────────────────────────────────────────────
-  let explanation = "";
+  if (confidence < MIN_RECOMMENDATION_CONFIDENCE) {
+    return { valid: false, confidence: 0, groupReason: "" };
+  }
+
+  // Build human-readable group reason
+  let groupReason = "";
   if (reasons.length >= 2) {
     const last = reasons[reasons.length - 1];
     const rest = reasons.slice(0, -1).join(", ");
-    explanation = `Grouped because these photos ${rest} and ${last}.`;
+    groupReason = `Photos ${rest} and ${last}.`;
   } else if (reasons.length === 1) {
-    explanation = `Grouped because these photos ${reasons[0]}.`;
+    groupReason = `Photos ${reasons[0]}.`;
   } else {
-    explanation = "Grouped by visual and temporal similarity.";
+    groupReason = "Visually and temporally similar shots.";
   }
-  explanation = explanation.charAt(0).toUpperCase() + explanation.slice(1);
+  groupReason = groupReason.charAt(0).toUpperCase() + groupReason.slice(1);
 
-  return { isMatch: true, confidence, explanation };
+  return { valid: true, confidence, groupReason };
 }
 
-/** Build groups using the calibrated similar-shot matcher */
+// ─── Keep Recommendation ──────────────────────────────────────────────────────
+//
+// Score each item in the group to recommend which one to keep.
+// Reasons are returned for display.
+
+interface KeepRecommendation {
+  id: string;
+  reasons: string[];
+}
+
+function selectBestToKeep(group: any[]): KeepRecommendation {
+  const scores = group.map(item => {
+    let score = 0;
+    const reasons: string[] = [];
+
+    // Is it an unprocessed original?
+    if (isOriginalFile(item.filename)) {
+      score += 30;
+      reasons.push("Original (unprocessed)");
+    }
+
+    // File size (proxy for resolution — largest = highest quality)
+    const maxSize = Math.max(...group.map(i => i.file_size));
+    if (item.file_size === maxSize && group.length > 1) {
+      score += 20;
+      reasons.push("Highest resolution");
+    } else if (item.file_size >= maxSize * 0.95) {
+      score += 10;
+      reasons.push("Near-highest resolution");
+    }
+
+    // Recency (for edited versions — the newest edit is preferred)
+    const latestTime = Math.max(...group.map(i => new Date(i.taken_at).getTime()));
+    if (new Date(item.taken_at).getTime() === latestTime && group.length > 1) {
+      score += 5;
+    }
+
+    return { item, score, reasons };
+  });
+
+  scores.sort((a, b) => b.score - a.score);
+  const best = scores[0];
+
+  // Always show at least one reason
+  if (best.reasons.length === 0) best.reasons.push("Largest file");
+
+  return { id: best.item.id, reasons: best.reasons };
+}
+
+// ─── Two-Stage Grouping Entry Point ───────────────────────────────────────────
+
+interface SimilarGroup {
+  group: any[];
+  explanation: string;
+  confidence: number;
+  keepRecommendation: KeepRecommendation;
+}
+
 function groupSimilarPhotos(
   items: any[],
   exactDupIds: Set<string>,
   nearDupIds: Set<string>
-): { group: any[]; explanation: string; confidence: number }[] {
-  const groups: { group: any[]; explanation: string; confidence: number }[] = [];
+): SimilarGroup[] {
+  const groups: SimilarGroup[] = [];
   const visited = new Set<string>();
-  const pool = items.filter((it) => !exactDupIds.has(it.id) && !nearDupIds.has(it.id));
+  const pool = items.filter(it => !exactDupIds.has(it.id) && !nearDupIds.has(it.id));
 
   for (let i = 0; i < pool.length; i++) {
     const seed = pool[i];
     if (visited.has(seed.id)) continue;
 
-    const currentGroup: any[] = [seed];
-    let bestExplanation = "";
-    let bestConfidence = 0;
+    const candidates: Array<{ item: any; validation: ValidationResult }> = [];
 
     for (let j = i + 1; j < pool.length; j++) {
       const candidate = pool[j];
       if (visited.has(candidate.id)) continue;
 
-      const result = calculateSimilarShotMatch(seed, candidate);
-      if (result.isMatch) {
-        currentGroup.push(candidate);
-        visited.add(candidate.id);
-        if (result.confidence > bestConfidence) {
-          bestConfidence = result.confidence;
-          bestExplanation = result.explanation;
-        }
+      // ── STAGE 1: Candidate gate ───────────────────────────────────────────
+      if (!isCandidatePair(seed, candidate)) continue;
+
+      // ── STAGE 2: AI validation ────────────────────────────────────────────
+      const validation = validatePair(seed, candidate);
+      if (validation.valid) {
+        candidates.push({ item: candidate, validation });
       }
     }
 
-    if (currentGroup.length > 1) {
-      groups.push({ group: currentGroup, explanation: bestExplanation, confidence: bestConfidence });
-      visited.add(seed.id);
-    }
+    if (candidates.length === 0) continue;
+
+    // Sort by confidence descending, cap at MAX_GROUP_SIZE - 1 (seed is always included)
+    candidates.sort((a, b) => b.validation.confidence - a.validation.confidence);
+    const accepted = candidates.slice(0, MAX_GROUP_SIZE - 1);
+
+    const groupItems = [seed, ...accepted.map(c => c.item)];
+    const bestValidation = accepted[0].validation;
+
+    // Mark all as visited
+    for (const { item } of accepted) visited.add(item.id);
+    visited.add(seed.id);
+
+    groups.push({
+      group: groupItems,
+      explanation: bestValidation.groupReason,
+      confidence: bestValidation.confidence,
+      keepRecommendation: selectBestToKeep(groupItems),
+    });
   }
 
   return groups;
 }
+
 
 export default function RecommendationsPage() {
   const queryClient = useQueryClient();
@@ -555,7 +771,7 @@ export default function RecommendationsPage() {
       {
         id: "similar",
         name: "Similar Photos",
-        desc: "Redesigned: photos of same subject/moment grouped by time proximity and visual/scene overlap",
+        desc: "Groups photos of the same subject or capture moment. AI-validated — only shows when multiple signals agree.",
         count: `${similarGroups.length} groups found`,
         items: similarGroups.flatMap(sg => sg.group),
       },
@@ -790,14 +1006,14 @@ export default function RecommendationsPage() {
         /* Render Grouped/Clustered Layout */
         <div className="space-y-8">
           {(activeCategory === "duplicates" 
-            ? displayExactDuplicateGroups.map(g => ({ group: g, explanation: "Duplicate files", confidence: 100 })) 
+            ? displayExactDuplicateGroups.map(g => ({ group: g, explanation: "Duplicate files", confidence: 100, keepRecommendation: { id: Array.from(g).sort((a,b) => b.file_size - a.file_size)[0].id, reasons: ["Largest file"] } })) 
             : activeCategory === "near_duplicates" 
-              ? displayNearDuplicateGroups.map(g => ({ group: g, explanation: "Near duplicate files", confidence: 95 })) 
+              ? displayNearDuplicateGroups.map(g => ({ group: g, explanation: "Near duplicate files", confidence: 95, keepRecommendation: { id: Array.from(g).sort((a,b) => b.file_size - a.file_size)[0].id, reasons: ["Largest file"] } })) 
               : similarGroups
-          ).map(({ group, explanation, confidence }, groupIdx) => {
-            // Recommendation helper (keep the largest/newest file)
+          ).map(({ group, explanation, confidence, keepRecommendation }, groupIdx) => {
+            const keepRecommendationId = keepRecommendation?.id ?? group[0].id;
+            const keepReasons: string[] = keepRecommendation?.reasons ?? [];
             const sortedByKeep = [...group].sort((a, b) => b.file_size - a.file_size);
-            const keepRecommendationId = sortedByKeep[0].id;
 
             return (
               <div 
@@ -815,7 +1031,7 @@ export default function RecommendationsPage() {
                     </span>
                   </div>
                   <span className="text-[10px]" style={{ color: "var(--text-tertiary)" }}>
-                    Potential Savings: {formatFileSize(group.reduce((sum, i) => sum + i.file_size, 0) - sortedByKeep[0].file_size)}
+                    Potential Savings: {formatFileSize(group.reduce((sum, i) => sum + i.file_size, 0) - (group.find(i => i.id === keepRecommendationId)?.file_size ?? sortedByKeep[0].file_size))}
                   </span>
                 </div>
 
@@ -840,8 +1056,17 @@ export default function RecommendationsPage() {
                       >
                         {/* Recommendation Badge */}
                         {isRecommendedToKeep && (
-                          <div className="absolute top-2 left-2 z-10 flex items-center gap-1 px-2 py-0.5 rounded text-[8px] font-bold bg-amber-500 text-black shadow-md">
-                            <Star className="w-2.5 h-2.5 fill-black" /> Keep Recommended
+                          <div className="absolute top-2 left-2 z-10 max-w-[70%]">
+                            <div className="flex items-center gap-1 px-2 py-0.5 rounded text-[8px] font-bold bg-amber-500 text-black shadow-md">
+                              <Star className="w-2.5 h-2.5 fill-black flex-shrink-0" /> ⭐ Keep
+                            </div>
+                            {activeCategory === "similar" && keepReasons.length > 0 && (
+                              <div className="mt-0.5 flex flex-col gap-0.5">
+                                {keepReasons.map((r, ri) => (
+                                  <span key={ri} className="inline-block px-1.5 py-0.5 rounded text-[7px] font-semibold bg-black/70 text-amber-300 backdrop-blur-sm">{r}</span>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         )}
 
