@@ -36,65 +36,69 @@ interface SimilarityMatch {
   explanation: string;
 }
 
+function checkFilenameMatch(fn1: string, fn2: string): boolean {
+  if (!fn1 || !fn2) return false;
+  const clean = (fn: string) => {
+    const withoutPrefixes = fn.replace(/^(dark|bright|cropped|rotated|resized|blurred)_+/i, "");
+    const base = withoutPrefixes.substring(0, withoutPrefixes.lastIndexOf('.')) || withoutPrefixes;
+    const parts = base.split(/[_-]/);
+    return parts[parts.length - 1];
+  };
+  return clean(fn1) === clean(fn2);
+}
+
 function calculateSimilarShotMatch(itemA: any, itemB: any): SimilarityMatch {
   // Strict Gate 1: Both must have p_hash
   if (!itemA.p_hash || !itemB.p_hash) {
     return { isMatch: false, confidence: 0, explanation: "" };
   }
 
-  // Strict Gate 2: High Visual Similarity via pHash Hamming Distance <= 8
+  // Strict Gate 2: High Visual Similarity via pHash Hamming Distance <= 4
   const dist = getHammingDistance(itemA.p_hash, itemB.p_hash);
-  if (dist > 8) {
+  if (dist > 4) {
     return { isMatch: false, confidence: 0, explanation: "" };
   }
 
-  const explanations: string[] = ["have very high visual similarity"];
-  let matchingSignalsCount = 1;
-
-  // Additional Signal A: Timestamp Proximity (within 30 seconds)
+  // Strict Gate 3: Time Proximity (within 30 seconds EXIF window)
   const timeA = new Date(itemA.taken_at).getTime();
   const timeB = new Date(itemB.taken_at).getTime();
   const timeDiffSec = Math.abs(timeA - timeB) / 1000;
-  if (timeDiffSec <= 30) {
-    matchingSignalsCount++;
-    explanations.push(`were captured within ${Math.round(timeDiffSec)} seconds of each other`);
+  if (timeDiffSec > 30) {
+    return { isMatch: false, confidence: 0, explanation: "" };
   }
 
-  // Additional Signal B: Matching Dominant Objects
+  const explanations: string[] = [
+    "have very high visual similarity",
+    `were captured within ${Math.round(timeDiffSec)} seconds of each other`
+  ];
+  let isCorroborated = false;
+
+  // Signal A: Matching Dominant Objects
   const objsA = itemA.ai_analysis?.objects || [];
   const objsB = itemB.ai_analysis?.objects || [];
   const commonObjects = objsA.filter((o: string) => objsB.includes(o));
   if (commonObjects.length > 0) {
-    matchingSignalsCount++;
+    isCorroborated = true;
     explanations.push(`depict the same ${commonObjects[0]}`);
   }
 
-  // Additional Signal C: Matching Scene Classification
+  // Signal B: Matching Scene Classification
   const sceneA = itemA.ai_analysis?.scene;
   const sceneB = itemB.ai_analysis?.scene;
   if (sceneA && sceneB && sceneA.toLowerCase().trim() === sceneB.toLowerCase().trim()) {
-    matchingSignalsCount++;
+    isCorroborated = true;
     explanations.push(`share matching ${sceneA.toLowerCase().trim()} scenes`);
   }
 
-  // Additional Signal D: Similar AI Captions (Jaccard similarity >= 0.25)
-  const capA = itemA.ai_analysis?.caption || "";
-  const capB = itemB.ai_analysis?.caption || "";
-  if (capA && capB) {
-    const wordsA = capA.toLowerCase().split(/\s+/).filter((w: string) => w.length > 3);
-    const wordsB = capB.toLowerCase().split(/\s+/).filter((w: string) => w.length > 3);
-    const setB = new Set<string>(wordsB);
-    const intersection = wordsA.filter((x: string) => setB.has(x));
-    const union = new Set<string>([...wordsA, ...wordsB]);
-    const jaccard = union.size > 0 ? intersection.length / union.size : 0;
-    if (jaccard >= 0.25) {
-      matchingSignalsCount++;
-      explanations.push("have matching caption descriptions");
-    }
+  // Signal C: Filename Origin Match (seq/burst captures)
+  const filenameMatch = checkFilenameMatch(itemA.filename, itemB.filename);
+  if (filenameMatch) {
+    isCorroborated = true;
+    explanations.push("have matching sequential filename origins");
   }
 
-  // We require visual similarity (1) + at least 1 corroborating signal (e.g. timestamp or objects)
-  if (matchingSignalsCount >= 2) {
+  // Require visual & time gates, and at least one high-fidelity corroboration signal
+  if (isCorroborated) {
     let finalExplanation = "";
     if (explanations.length > 1) {
       const last = explanations.pop();
@@ -106,11 +110,14 @@ function calculateSimilarShotMatch(itemA: any, itemB: any): SimilarityMatch {
     finalExplanation = finalExplanation.charAt(0).toUpperCase() + finalExplanation.slice(1);
 
     // Calculate confidence score based on agreeing signals
-    let confidence = 80;
-    if (matchingSignalsCount === 2) confidence = 85;
-    else if (matchingSignalsCount === 3) confidence = 90;
-    else if (matchingSignalsCount === 4) confidence = 95;
-    else if (matchingSignalsCount >= 5) confidence = 99;
+    let confidence = 90;
+    let matchingSignals = 2; // visual + time
+    if (commonObjects.length > 0) matchingSignals++;
+    if (sceneA && sceneB && sceneA.toLowerCase().trim() === sceneB.toLowerCase().trim()) matchingSignals++;
+    if (filenameMatch) matchingSignals++;
+
+    if (matchingSignals === 3) confidence = 95;
+    else if (matchingSignals >= 4) confidence = 99;
 
     return { isMatch: true, confidence, explanation: finalExplanation };
   }
