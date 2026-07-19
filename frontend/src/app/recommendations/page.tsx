@@ -36,31 +36,31 @@ interface SimilarityMatch {
   explanation: string;
 }
 
-// Redesigned similar shots matching helper requiring multiple independent signals agreeing
 function calculateSimilarShotMatch(itemA: any, itemB: any): SimilarityMatch {
-  // Signal 1: Time Proximity (EXIF window between 10-30 seconds)
-  const timeA = new Date(itemA.taken_at).getTime();
-  const timeB = new Date(itemB.taken_at).getTime();
-  const timeDiffSec = Math.abs(timeA - timeB) / 1000;
-  const timeMatch = timeDiffSec <= 30; // 30 seconds strict threshold
-
-  if (!timeMatch) {
+  // Strict Gate 1: Both must have p_hash
+  if (!itemA.p_hash || !itemB.p_hash) {
     return { isMatch: false, confidence: 0, explanation: "" };
   }
 
-  const explanations: string[] = [`taken within ${Math.round(timeDiffSec)} seconds`];
-  let matchingSignalsCount = 1;
-
-  // Signal 2: Visual Similarity via pHash
-  if (itemA.p_hash && itemB.p_hash) {
-    const dist = getHammingDistance(itemA.p_hash, itemB.p_hash);
-    if (dist <= 10) {
-      matchingSignalsCount++;
-      explanations.push("have high visual similarity");
-    }
+  // Strict Gate 2: High Visual Similarity via pHash Hamming Distance <= 8
+  const dist = getHammingDistance(itemA.p_hash, itemB.p_hash);
+  if (dist > 8) {
+    return { isMatch: false, confidence: 0, explanation: "" };
   }
 
-  // Signal 3: Matching Dominant Objects
+  const explanations: string[] = ["have very high visual similarity"];
+  let matchingSignalsCount = 1;
+
+  // Additional Signal A: Timestamp Proximity (within 30 seconds)
+  const timeA = new Date(itemA.taken_at).getTime();
+  const timeB = new Date(itemB.taken_at).getTime();
+  const timeDiffSec = Math.abs(timeA - timeB) / 1000;
+  if (timeDiffSec <= 30) {
+    matchingSignalsCount++;
+    explanations.push(`were captured within ${Math.round(timeDiffSec)} seconds of each other`);
+  }
+
+  // Additional Signal B: Matching Dominant Objects
   const objsA = itemA.ai_analysis?.objects || [];
   const objsB = itemB.ai_analysis?.objects || [];
   const commonObjects = objsA.filter((o: string) => objsB.includes(o));
@@ -69,7 +69,7 @@ function calculateSimilarShotMatch(itemA: any, itemB: any): SimilarityMatch {
     explanations.push(`depict the same ${commonObjects[0]}`);
   }
 
-  // Signal 4: Matching Scene Classification
+  // Additional Signal C: Matching Scene Classification
   const sceneA = itemA.ai_analysis?.scene;
   const sceneB = itemB.ai_analysis?.scene;
   if (sceneA && sceneB && sceneA.toLowerCase().trim() === sceneB.toLowerCase().trim()) {
@@ -77,7 +77,7 @@ function calculateSimilarShotMatch(itemA: any, itemB: any): SimilarityMatch {
     explanations.push(`share matching ${sceneA.toLowerCase().trim()} scenes`);
   }
 
-  // Signal 5: Similar AI Captions (Jaccard similarity >= 0.3)
+  // Additional Signal D: Similar AI Captions (Jaccard similarity >= 0.25)
   const capA = itemA.ai_analysis?.caption || "";
   const capB = itemB.ai_analysis?.caption || "";
   if (capA && capB) {
@@ -87,29 +87,28 @@ function calculateSimilarShotMatch(itemA: any, itemB: any): SimilarityMatch {
     const intersection = wordsA.filter((x: string) => setB.has(x));
     const union = new Set<string>([...wordsA, ...wordsB]);
     const jaccard = union.size > 0 ? intersection.length / union.size : 0;
-    if (jaccard >= 0.3) {
+    if (jaccard >= 0.25) {
       matchingSignalsCount++;
-      explanations.push("have similar caption descriptions");
+      explanations.push("have matching caption descriptions");
     }
   }
 
-  // Must have Time Proximity + at least 2 other agreeing signals
-  if (matchingSignalsCount >= 3) {
-    // Generate explanation
+  // We require visual similarity (1) + at least 1 corroborating signal (e.g. timestamp or objects)
+  if (matchingSignalsCount >= 2) {
     let finalExplanation = "";
     if (explanations.length > 1) {
       const last = explanations.pop();
-      finalExplanation = `Grouped because these photos were ${explanations.join(", ")} and ${last}.`;
+      finalExplanation = `Grouped because these photos ${explanations.join(", ")} and ${last}.`;
     } else {
-      finalExplanation = `Grouped because these photos were ${explanations[0]}.`;
+      finalExplanation = `Grouped because these photos ${explanations[0]}.`;
     }
 
-    // Capitalize first letter
     finalExplanation = finalExplanation.charAt(0).toUpperCase() + finalExplanation.slice(1);
 
-    // Calculate confidence score
-    let confidence = 75;
-    if (matchingSignalsCount === 3) confidence = 85;
+    // Calculate confidence score based on agreeing signals
+    let confidence = 80;
+    if (matchingSignalsCount === 2) confidence = 85;
+    else if (matchingSignalsCount === 3) confidence = 90;
     else if (matchingSignalsCount === 4) confidence = 95;
     else if (matchingSignalsCount >= 5) confidence = 99;
 
@@ -157,15 +156,6 @@ function groupStrictSimilarPhotos(items: any[], exactDupIds: Set<string>, nearDu
       });
       visited.add(itemA.id);
     }
-  }
-
-  // Artificial fallback for similar photos group if 0 found (using real assets to display UI correctly)
-  if (groups.length === 0 && filterItems.length >= 2) {
-    groups.push({
-      group: [filterItems[0], filterItems[1]],
-      explanation: "Grouped because these photos were taken within 14 seconds, contain matching beach scenes, and depict similar activities.",
-      confidence: 88
-    });
   }
 
   return groups;
