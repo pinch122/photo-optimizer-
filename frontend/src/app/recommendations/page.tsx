@@ -36,121 +36,190 @@ interface SimilarityMatch {
   explanation: string;
 }
 
-function checkFilenameMatch(fn1: string, fn2: string): boolean {
-  if (!fn1 || !fn2) return false;
-  const clean = (fn: string) => {
-    const withoutPrefixes = fn.replace(/^(dark|bright|cropped|rotated|resized|blurred)_+/i, "");
-    const base = withoutPrefixes.substring(0, withoutPrefixes.lastIndexOf('.')) || withoutPrefixes;
-    const parts = base.split(/[_-]/);
-    return parts[parts.length - 1];
-  };
-  return clean(fn1) === clean(fn2);
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Extract a normalised root token from a filename, e.g. dark_0021_362.jpg → "362" */
+function extractFilenameRoot(fn: string): string {
+  if (!fn) return "";
+  const withoutPrefix = fn.replace(/^(dark|bright|cropped|rotated|resized|blurred)_+\d*_*/i, "");
+  const base = withoutPrefix.substring(0, withoutPrefix.lastIndexOf(".")) || withoutPrefix;
+  const parts = base.split(/[_\-]/);
+  return parts[parts.length - 1].toLowerCase();
 }
 
-function calculateSimilarShotMatch(itemA: any, itemB: any): SimilarityMatch {
-  // Strict Gate 1: Both must have p_hash
-  if (!itemA.p_hash || !itemB.p_hash) {
+/** Compute Jaccard word-overlap for two caption strings (min word length 4) */
+function captionJaccard(capA: string, capB: string): number {
+  if (!capA || !capB) return 0;
+  const wA = capA.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
+  const wB = capB.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
+  const setB = new Set<string>(wB);
+  const intersection = wA.filter((w) => setB.has(w));
+  const union = new Set<string>([...wA, ...wB]);
+  return union.size > 0 ? intersection.length / union.size : 0;
+}
+
+// ─── Stage 1: Candidate Generation ─────────────────────────────────────────
+// A pair is a candidate when it passes AT LEAST ONE broad gate:
+//   • pHash Hamming distance ≤ 10   (visually similar)
+//   • Temporal proximity ≤ 120 s    (captured in the same burst / session)
+// Both conditions are checked without requiring the other.
+
+function isCandidatePair(itemA: any, itemB: any): { passVisual: boolean; timeDiffSec: number } {
+  const timeDiffSec = Math.abs(
+    new Date(itemA.taken_at).getTime() - new Date(itemB.taken_at).getTime()
+  ) / 1000;
+
+  const passTime = timeDiffSec <= 120;
+
+  let passVisual = false;
+  if (itemA.p_hash && itemB.p_hash) {
+    passVisual = getHammingDistance(itemA.p_hash, itemB.p_hash) <= 10;
+  }
+
+  return { passVisual, timeDiffSec };
+}
+
+// ─── Stage 2: Validation via AI signals ─────────────────────────────────────
+// Score each candidate pair using multiple independent signals.
+// Each signal adds to a confidence score (0–100).
+// A pair is accepted only when confidence ≥ MIN_CONFIDENCE.
+//
+// Signal weights (all checked independently, not mutually exclusive):
+//   Visual pHash distance        → up to 30 pts  (mandatory to continue if pHash available)
+//   Temporal proximity           → up to 20 pts
+//   Matching objects             → 25 pts
+//   Matching scene               → 20 pts
+//   Caption Jaccard ≥ 0.15       → 10 pts
+//   Filename root match          → 20 pts
+
+const MIN_CONFIDENCE = 60; // minimum total score to accept a pair
+
+function validateCandidatePair(itemA: any, itemB: any): SimilarityMatch {
+  const { passVisual, timeDiffSec } = isCandidatePair(itemA, itemB);
+
+  // If neither broad gate is satisfied, reject immediately
+  const passTime = timeDiffSec <= 120;
+  if (!passVisual && !passTime) {
     return { isMatch: false, confidence: 0, explanation: "" };
   }
 
-  // Strict Gate 2: High Visual Similarity via pHash Hamming Distance <= 4
-  const dist = getHammingDistance(itemA.p_hash, itemB.p_hash);
-  if (dist > 4) {
-    return { isMatch: false, confidence: 0, explanation: "" };
-  }
-
-  // Strict Gate 3: Time Proximity (within 30 seconds EXIF window)
-  const timeA = new Date(itemA.taken_at).getTime();
-  const timeB = new Date(itemB.taken_at).getTime();
-  const timeDiffSec = Math.abs(timeA - timeB) / 1000;
-  if (timeDiffSec > 30) {
-    return { isMatch: false, confidence: 0, explanation: "" };
-  }
-
-  const explanations: string[] = [
-    "have very high visual similarity",
-    `were captured within ${Math.round(timeDiffSec)} seconds of each other`
-  ];
-  let isCorroborated = false;
-
-  // Signal A: Matching Dominant Objects
-  const objsA = itemA.ai_analysis?.objects || [];
-  const objsB = itemB.ai_analysis?.objects || [];
-  const commonObjects = objsA.filter((o: string) => objsB.includes(o));
-  if (commonObjects.length > 0) {
-    isCorroborated = true;
-    explanations.push(`depict the same ${commonObjects[0]}`);
-  }
-
-  // Signal B: Matching Scene Classification
-  const sceneA = itemA.ai_analysis?.scene;
-  const sceneB = itemB.ai_analysis?.scene;
-  if (sceneA && sceneB && sceneA.toLowerCase().trim() === sceneB.toLowerCase().trim()) {
-    isCorroborated = true;
-    explanations.push(`share matching ${sceneA.toLowerCase().trim()} scenes`);
-  }
-
-  // Signal C: Filename Origin Match (seq/burst captures)
-  const filenameMatch = checkFilenameMatch(itemA.filename, itemB.filename);
-  if (filenameMatch) {
-    isCorroborated = true;
-    explanations.push("have matching sequential filename origins");
-  }
-
-  // Require visual & time gates, and at least one high-fidelity corroboration signal
-  if (isCorroborated) {
-    let finalExplanation = "";
-    if (explanations.length > 1) {
-      const last = explanations.pop();
-      finalExplanation = `Grouped because these photos ${explanations.join(", ")} and ${last}.`;
-    } else {
-      finalExplanation = `Grouped because these photos ${explanations[0]}.`;
+  // If both have pHash and they are not visually similar at all (dist > 15), reject
+  if (itemA.p_hash && itemB.p_hash) {
+    const dist = getHammingDistance(itemA.p_hash, itemB.p_hash);
+    if (dist > 15) {
+      return { isMatch: false, confidence: 0, explanation: "" };
     }
-
-    finalExplanation = finalExplanation.charAt(0).toUpperCase() + finalExplanation.slice(1);
-
-    // Calculate confidence score based on agreeing signals
-    let confidence = 90;
-    let matchingSignals = 2; // visual + time
-    if (commonObjects.length > 0) matchingSignals++;
-    if (sceneA && sceneB && sceneA.toLowerCase().trim() === sceneB.toLowerCase().trim()) matchingSignals++;
-    if (filenameMatch) matchingSignals++;
-
-    if (matchingSignals === 3) confidence = 95;
-    else if (matchingSignals >= 4) confidence = 99;
-
-    return { isMatch: true, confidence, explanation: finalExplanation };
   }
 
-  return { isMatch: false, confidence: 0, explanation: "" };
+  let score = 0;
+  const reasons: string[] = [];
+
+  // — Visual signal ————————————————————————————————
+  if (itemA.p_hash && itemB.p_hash) {
+    const dist = getHammingDistance(itemA.p_hash, itemB.p_hash);
+    if (dist <= 4)       { score += 30; reasons.push("are visually near-identical"); }
+    else if (dist <= 8)  { score += 22; reasons.push("have very high visual similarity"); }
+    else if (dist <= 12) { score += 14; reasons.push("have high visual similarity"); }
+    else                 { score +=  6; reasons.push("share visual features"); }
+  }
+
+  // — Temporal signal ——————————————————————————————
+  if (timeDiffSec <= 5)        { score += 20; reasons.push(`taken ${Math.round(timeDiffSec)}s apart`); }
+  else if (timeDiffSec <= 15)  { score += 17; reasons.push(`taken ${Math.round(timeDiffSec)} seconds apart`); }
+  else if (timeDiffSec <= 30)  { score += 14; reasons.push(`taken ${Math.round(timeDiffSec)} seconds apart`); }
+  else if (timeDiffSec <= 60)  { score +=  9; reasons.push(`taken within a minute`); }
+  else if (timeDiffSec <= 120) { score +=  4; reasons.push(`taken within 2 minutes`); }
+
+  // — Object signal ————————————————————————————————
+  const objsA: string[] = itemA.ai_analysis?.objects ?? [];
+  const objsB: string[] = itemB.ai_analysis?.objects ?? [];
+  const commonObjs = objsA.filter((o) => objsB.includes(o));
+  if (commonObjs.length >= 2) { score += 25; reasons.push(`both contain ${commonObjs.slice(0, 2).join(" and ")}`); }
+  else if (commonObjs.length === 1) { score += 18; reasons.push(`both feature a ${commonObjs[0]}`); }
+
+  // — Scene signal —————————————————————————————————
+  const sceneA: string = itemA.ai_analysis?.scene ?? "";
+  const sceneB: string = itemB.ai_analysis?.scene ?? "";
+  if (sceneA && sceneB && sceneA.toLowerCase().trim() === sceneB.toLowerCase().trim()) {
+    score += 20;
+    reasons.push(`in the same ${sceneA.toLowerCase().trim()} setting`);
+  }
+
+  // — Caption Jaccard signal ————————————————————————
+  const jaccard = captionJaccard(
+    itemA.ai_analysis?.caption ?? "",
+    itemB.ai_analysis?.caption ?? ""
+  );
+  if (jaccard >= 0.35)      { score += 10; reasons.push("share very similar descriptions"); }
+  else if (jaccard >= 0.15) { score +=  5; reasons.push("have related captions"); }
+
+  // — Filename root signal ——————————————————————————
+  const rootA = extractFilenameRoot(itemA.filename);
+  const rootB = extractFilenameRoot(itemB.filename);
+  if (rootA && rootB && rootA === rootB) {
+    score += 20;
+    reasons.push("are sequential captures of the same source");
+  }
+
+  if (score < MIN_CONFIDENCE) {
+    return { isMatch: false, confidence: 0, explanation: "" };
+  }
+
+  // Build natural-language explanation
+  let explanation = "";
+  if (reasons.length >= 2) {
+    const last = reasons[reasons.length - 1];
+    const rest = reasons.slice(0, -1).join(", ");
+    explanation = `Grouped because these photos ${rest} and ${last}.`;
+  } else if (reasons.length === 1) {
+    explanation = `Grouped because these photos ${reasons[0]}.`;
+  } else {
+    explanation = "Grouped by visual and temporal similarity.";
+  }
+  explanation = explanation.charAt(0).toUpperCase() + explanation.slice(1);
+
+  // Clamp confidence to 0-99
+  const confidence = Math.min(99, score);
+
+  return { isMatch: true, confidence, explanation };
 }
 
-// Strict Similar Shots grouping function
-function groupStrictSimilarPhotos(items: any[], exactDupIds: Set<string>, nearDupIds: Set<string>): { group: any[], explanation: string, confidence: number }[] {
-  const groups: { group: any[], explanation: string, confidence: number }[] = [];
+// ─── Two-Stage Grouping Entry Point ─────────────────────────────────────────
+
+function groupSimilarPhotos(
+  items: any[],
+  exactDupIds: Set<string>,
+  nearDupIds: Set<string>
+): { group: any[]; explanation: string; confidence: number }[] {
+  const groups: { group: any[]; explanation: string; confidence: number }[] = [];
   const visited = new Set<string>();
 
-  const filterItems = items.filter(item => !exactDupIds.has(item.id) && !nearDupIds.has(item.id));
+  const pool = items.filter((item) => !exactDupIds.has(item.id) && !nearDupIds.has(item.id));
 
-  for (let i = 0; i < filterItems.length; i++) {
-    const itemA = filterItems[i];
-    if (visited.has(itemA.id)) continue;
+  for (let i = 0; i < pool.length; i++) {
+    const seed = pool[i];
+    if (visited.has(seed.id)) continue;
 
-    const currentGroup = [itemA];
-    let groupExplanation = "";
-    let maxConfidence = 0;
+    const currentGroup: any[] = [seed];
+    let bestExplanation = "";
+    let bestConfidence = 0;
 
-    for (let j = i + 1; j < filterItems.length; j++) {
-      const itemB = filterItems[j];
-      if (visited.has(itemB.id)) continue;
+    for (let j = i + 1; j < pool.length; j++) {
+      const candidate = pool[j];
+      if (visited.has(candidate.id)) continue;
 
-      const match = calculateSimilarShotMatch(itemA, itemB);
-      if (match.isMatch) {
-        currentGroup.push(itemB);
-        visited.add(itemB.id);
-        if (match.confidence > maxConfidence) {
-          maxConfidence = match.confidence;
-          groupExplanation = match.explanation;
+      // Stage 1 – quick broad filter
+      const { passVisual, timeDiffSec } = isCandidatePair(seed, candidate);
+      if (!passVisual && timeDiffSec > 120) continue;
+
+      // Stage 2 – full validation
+      const result = validateCandidatePair(seed, candidate);
+      if (result.isMatch) {
+        currentGroup.push(candidate);
+        visited.add(candidate.id);
+        if (result.confidence > bestConfidence) {
+          bestConfidence = result.confidence;
+          bestExplanation = result.explanation;
         }
       }
     }
@@ -158,10 +227,10 @@ function groupStrictSimilarPhotos(items: any[], exactDupIds: Set<string>, nearDu
     if (currentGroup.length > 1) {
       groups.push({
         group: currentGroup,
-        explanation: groupExplanation,
-        confidence: maxConfidence
+        explanation: bestExplanation,
+        confidence: bestConfidence,
       });
-      visited.add(itemA.id);
+      visited.add(seed.id);
     }
   }
 
@@ -309,8 +378,8 @@ export default function RecommendationsPage() {
     displayNearDuplicateGroups = [[activeItems[1], mockNear]];
   }
 
-  // 3. Similar Photos (strict redesigned grouping criteria using multiple agreeing signals)
-  const similarGroups = groupStrictSimilarPhotos(activeItems, exactDupIds, nearDupIds);
+  // 3. Similar Photos — two-stage pipeline (candidate generation + AI signal validation)
+  const similarGroups = groupSimilarPhotos(activeItems, exactDupIds, nearDupIds);
 
   // 4. Blurry Photos (deterministic blur score > 90)
   const blurryPhotos = activeItems.filter(item => {
