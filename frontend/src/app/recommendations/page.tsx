@@ -31,338 +31,318 @@ function getHammingDistance(hex1: string, hex2: string): number {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  SIMILAR PHOTOS — TWO-STAGE RECOMMENDATION ENGINE
+//  SIMILAR PHOTOS — TWO-STAGE DEDUPLICATION PIPELINE
 //
-//  Goal: "Help users choose the best photo from multiple captures of the
-//         SAME subject or SAME capture moment."
+//  Stage 1 (Candidate Generation) — Hard AND gate, no semantic signals:
+//    • EXIF timestamp difference ≤ STAGE1_TIME_SEC        (X)
+//    • pHash Hamming distance    ≤ STAGE1_PHASH_DIST      (Y)
+//    Both must pass. Either failing → reject immediately.
 //
-//  NOT a generic image similarity engine.
-//  Visual similarity alone is NEVER sufficient to form a recommendation.
+//  Stage 2 (Validation) — Semantic gate, within Stage 1 candidates only:
+//    • Object-detection Jaccard overlap ≥ STAGE2_OBJ_OVERLAP (Z)
+//    • Same scene classification (when AI data present on both sides)
+//    CLIP cosine similarity → approximated via pHash distance as a
+//    confidence/tie-breaking score ONLY, never used for group formation.
+//
+//  Grouping: Union-Find with bounded-diameter checks.
+//    Before merging two groups, ALL cross-pairs must independently pass
+//    Stage 1 AND Stage 2. Prevents transitive drift across unrelated photos.
+//
+//  Ranking: sharpness → exposure quality → face quality → resolution
+//    Top photo = KEEP. Rest = deletion candidates with stated reason.
 // ════════════════════════════════════════════════════════════════════════════
 
-const MIN_RECOMMENDATION_CONFIDENCE = 80;
-const MAX_GROUP_SIZE = 5;
+// ─── Pipeline Parameters (tune these) ────────────────────────────────────────
+const STAGE1_TIME_SEC     = 30;   // X: max EXIF timestamp delta (seconds)
+const STAGE1_PHASH_DIST   = 10;   // Y: max pHash Hamming distance
+const STAGE2_OBJ_OVERLAP  = 0.25; // Z: min Jaccard object overlap (0–1)
+const MAX_GROUP_SIZE       = 5;    // hard cap on group members
+const MIN_CONFIDENCE       = 80;   // groups below this are suppressed
 
-// ─── Utility: Filename ────────────────────────────────────────────────────────
+// ─── Filename Utilities ───────────────────────────────────────────────────────
 
-/** Known variation prefixes that indicate the file is a processed copy */
-const VARIATION_PREFIXES = /^(dark|bright|cropped|rotated|resized|blurred|edited|compressed|scaled|small|thumb)_+/i;
+const VARIATION_RE = /^(dark|bright|cropped|rotated|resized|blurred|edited|compressed|scaled|small|thumb)_+/i;
 
-function isOriginalFile(filename: string): boolean {
-  return !VARIATION_PREFIXES.test(filename.toLowerCase());
+function isOriginalFile(fn: string): boolean {
+  return !VARIATION_RE.test(fn.toLowerCase());
 }
 
-/** Extract the base subject token: dark_0021_362.jpg → "362" */
 function extractFilenameRoot(fn: string): string {
   if (!fn) return "";
-  const stripped = fn
-    .replace(VARIATION_PREFIXES, "")
-    .replace(/^\d+_/, "");
-  const base = stripped.substring(0, stripped.lastIndexOf(".")) || stripped;
+  const s = fn.replace(VARIATION_RE, "").replace(/^\d+_/, "");
+  const base = s.substring(0, s.lastIndexOf(".")) || s;
   const parts = base.split(/[_\-]/);
   return parts[parts.length - 1].toLowerCase();
 }
 
-// ─── Utility: Subject Signature ───────────────────────────────────────────────
+// ─── Stage 1: Hard AND Gate ───────────────────────────────────────────────────
+// BOTH timestamp proximity AND pHash distance must pass.
+// No semantic signals at this stage.
 
-interface SubjectSignature {
-  objects: Set<string>;
-  activities: Set<string>;
-  scene: string;
-  indoorOutdoor: string;
-  documentType: string;
-  eventType: string;
-  peopleCount: number | null;
-  dominantNouns: Set<string>;
-  hasAIData: boolean;
+interface Stage1Result {
+  pass: boolean;
+  timeDiffSec: number;
+  pHashDist: number;
+  /** Visual similarity proxy [0–1], higher = more similar.
+   *  Approximates CLIP cosine similarity (which is stored in Qdrant and not
+   *  available in the frontend API response) via normalised pHash distance.
+   *  Used ONLY for confidence/tie-breaking — never for group formation. */
+  clipProxy: number;
 }
 
-const CAPTION_STOPWORDS = new Set([
-  "the","a","an","in","on","at","of","is","are","was","were","be","to","and","or","but",
-  "with","for","this","that","from","by","as","it","its","not","has","have","had","been",
-  "which","who","they","their","there","here","some","into","than","then","also","more",
-  "very","just","over","out","can","will","would","could","should","may","might","does",
-  "did","do","him","her","his","she","he","we","you","your","what","when","where","how",
-  "each","all","both","these","those","such","other","another","being","photo","image",
-  "picture","taken","shows","showing","scene","foreground","background","light","color",
-  "visible","appears","appear","seen","view","shot","camera","left","right","top","bottom",
-  "front","back","side","behind","looking","facing","standing","sitting","positioned"
-]);
-
-/** Extract meaningful nouns from caption / detailed description */
-function extractDominantNouns(text: string): Set<string> {
-  if (!text) return new Set();
-  const words = text.toLowerCase()
-    .replace(/[^a-z\s]/g, " ")
-    .split(/\s+/)
-    .filter(w => w.length > 3 && !CAPTION_STOPWORDS.has(w));
-  return new Set(words.slice(0, 12)); // top 12 meaningful words
-}
-
-function buildSubjectSignature(item: any): SubjectSignature {
-  const ai = item.ai_analysis;
-  const hasAIData = !!(ai && (
-    (ai.objects && ai.objects.length > 0) ||
-    ai.scene ||
-    ai.caption ||
-    ai.document_type ||
-    ai.event_type
-  ));
-
-  return {
-    objects:        new Set<string>((ai?.objects ?? []).map((o: string) => o.toLowerCase())),
-    activities:     new Set<string>((ai?.activities ?? []).map((a: string) => a.toLowerCase())),
-    scene:          (ai?.scene ?? "").toLowerCase().trim(),
-    indoorOutdoor:  (ai?.indoor_outdoor ?? "").toLowerCase().trim(),
-    documentType:   (ai?.document_type ?? "").toLowerCase().trim(),
-    eventType:      (ai?.event_type ?? "").toLowerCase().trim(),
-    peopleCount:    ai?.people_count ?? null,
-    dominantNouns:  extractDominantNouns((ai?.caption ?? "") + " " + (ai?.detailed_description ?? "")),
-    hasAIData,
-  };
-}
-
-function setIntersectionSize(a: Set<string>, b: Set<string>): number {
-  return Array.from(a).filter(item => b.has(item)).length;
-}
-
-// ─── Stage 1: Candidate Generation (HIGH RECALL) ─────────────────────────────
-//
-// Emit a candidate pair if ANY of these fire.
-// Over-generation is acceptable here — Stage 2 will filter.
-
-function isCandidatePair(a: any, b: any): boolean {
+function stage1Gate(a: any, b: any): Stage1Result {
   const timeDiffSec = Math.abs(
     new Date(a.taken_at).getTime() - new Date(b.taken_at).getTime()
   ) / 1000;
 
-  // Burst: definitely same moment
-  if (timeDiffSec <= 10) return true;
-
-  // Filename root: same base image, different processing
-  const rootA = extractFilenameRoot(a.filename);
-  const rootB = extractFilenameRoot(b.filename);
-  if (rootA && rootB && rootA === rootB) return true;
-
-  // Visual signals
-  if (a.p_hash && b.p_hash) {
-    const dist = getHammingDistance(a.p_hash, b.p_hash);
-    if (dist <= 10) return true;                    // near-identical
-    if (dist <= 12 && timeDiffSec <= 60) return true; // similar + close in time
+  if (timeDiffSec > STAGE1_TIME_SEC) {
+    return { pass: false, timeDiffSec, pHashDist: 999, clipProxy: 0 };
   }
 
-  return false;
+  if (!a.p_hash || !b.p_hash) {
+    // Cannot compute visual distance → fail Stage 1 (hard gate requires both)
+    return { pass: false, timeDiffSec, pHashDist: 999, clipProxy: 0 };
+  }
+
+  const pHashDist = getHammingDistance(a.p_hash, b.p_hash);
+  if (pHashDist > STAGE1_PHASH_DIST) {
+    return { pass: false, timeDiffSec, pHashDist, clipProxy: 0 };
+  }
+
+  const clipProxy = Math.max(0, (STAGE1_PHASH_DIST - pHashDist) / STAGE1_PHASH_DIST);
+  return { pass: true, timeDiffSec, pHashDist, clipProxy };
 }
 
-// ─── Stage 2: AI Validation (HIGH PRECISION) ─────────────────────────────────
-//
-// Answer ONE question: "If I showed these to a human, would they choose one
-// and delete the others?"
-//
-// Returns { valid, confidence, groupReason }
+// ─── Stage 2: Semantic Validation ────────────────────────────────────────────
+// Applied ONLY to Stage 1 candidates.
+// Requires: object Jaccard overlap ≥ Z AND same scene (when data present).
+// clipProxy is passed in for confidence scoring — it is NOT used to gate.
 
-interface ValidationResult {
+interface Stage2Result {
   valid: boolean;
-  confidence: number;
-  groupReason: string;
+  objectJaccard: number;    // 0–1; 1.0 when both sides have no objects
+  sceneMatch: boolean|null; // null = insufficient data on one/both sides
+  hasAIData: boolean;
+  label: string;            // human-readable validation label
 }
 
-function validatePair(a: any, b: any): ValidationResult {
-  const sigA = buildSubjectSignature(a);
-  const sigB = buildSubjectSignature(b);
-
-  const timeDiffSec = Math.abs(
-    new Date(a.taken_at).getTime() - new Date(b.taken_at).getTime()
-  ) / 1000;
-  const dist = (a.p_hash && b.p_hash) ? getHammingDistance(a.p_hash, b.p_hash) : 999;
-
-  // ── CASE A: No AI data on either side ────────────────────────────────────
-  // Very conservative: only accept near-identical or true burst
-  if (!sigA.hasAIData && !sigB.hasAIData) {
-    if (dist <= 4) return { valid: true, confidence: 82, groupReason: "visually near-identical photos" };
-    if (timeDiffSec <= 5) return { valid: true, confidence: 81, groupReason: "burst sequence captures" };
-    return { valid: false, confidence: 0, groupReason: "" };
-  }
-
-  // ── HARD REJECTIONS (require AI data on both sides) ───────────────────────
-  if (sigA.hasAIData && sigB.hasAIData) {
-    const objectConflict = sigA.objects.size > 0 && sigB.objects.size > 0
-      && setIntersectionSize(sigA.objects, sigB.objects) === 0;
-    const sceneConflict = sigA.scene && sigB.scene && sigA.scene !== sigB.scene;
-    const documentConflict = sigA.documentType && sigB.documentType
-      && sigA.documentType !== sigB.documentType;
-    const peopleConflict = sigA.peopleCount !== null && sigB.peopleCount !== null
-      && Math.abs(sigA.peopleCount - sigB.peopleCount) > 2
-      && objectConflict;
-
-    // Beach ↔ City / Clock ↔ Grass pattern: objects AND scene both conflict
-    if (objectConflict && sceneConflict) {
-      return { valid: false, confidence: 0, groupReason: "" };
-    }
-    // Passport ↔ Receipt: document types conflict
-    if (documentConflict) {
-      return { valid: false, confidence: 0, groupReason: "" };
-    }
-    // Different people count + different objects
-    if (peopleConflict) {
-      return { valid: false, confidence: 0, groupReason: "" };
-    }
-  }
-
-  // ── BUILD CONFIDENCE SCORE from acceptance signals ────────────────────────
-  let confidence = 80; // baseline — candidate already passed Stage 1
-  const reasons: string[] = [];
-
-  // Signal: same dominant objects (strongest AI signal)
-  const commonObjects = setIntersectionSize(sigA.objects, sigB.objects);
-  const commonObjectsList = Array.from(sigA.objects).filter(o => sigB.objects.has(o));
-  if (commonObjects >= 2) {
-    confidence += 12;
-    reasons.push(`same subjects (${commonObjectsList.slice(0, 2).join(", ")})`);
-  } else if (commonObjects === 1) {
-    confidence += 8;
-    reasons.push(`same subject (${commonObjectsList[0]})`);
-  }
-
-  // Signal: shared activities
-  const commonActivities = setIntersectionSize(sigA.activities, sigB.activities);
-  if (commonActivities >= 1) {
-    confidence += 6;
-    reasons.push("same activity");
-  }
-
-  // Signal: same scene
-  if (sigA.scene && sigB.scene && sigA.scene === sigB.scene) {
-    confidence += 8;
-    reasons.push(`same ${sigA.scene} scene`);
-  }
-
-  // Signal: same environment (indoor/outdoor)
-  if (sigA.indoorOutdoor && sigB.indoorOutdoor && sigA.indoorOutdoor === sigB.indoorOutdoor) {
-    confidence += 4;
-  }
-
-  // Signal: same event type (wedding, concert, etc.)
-  if (sigA.eventType && sigB.eventType && sigA.eventType === sigB.eventType) {
-    confidence += 9;
-    reasons.push(`same event (${sigA.eventType})`);
-  }
-
-  // Signal: same document type
-  if (sigA.documentType && sigB.documentType && sigA.documentType === sigB.documentType) {
-    confidence += 10;
-    reasons.push(`same document (${sigA.documentType})`);
-  }
-
-  // Signal: shared noun overlap from captions (dominant subject in prose)
-  const nounOverlap = setIntersectionSize(sigA.dominantNouns, sigB.dominantNouns);
-  if (nounOverlap >= 3) {
-    confidence += 7;
-    reasons.push("similar photo descriptions");
-  } else if (nounOverlap >= 1 && commonObjects === 0) {
-    confidence += 3;
-  }
-
-  // Signal: burst / tight timing
-  if (timeDiffSec <= 5) {
-    confidence += 8;
-    reasons.push(`taken ${Math.round(timeDiffSec)}s apart`);
-  } else if (timeDiffSec <= 15) {
-    confidence += 6;
-    reasons.push(`taken ${Math.round(timeDiffSec)} seconds apart`);
-  } else if (timeDiffSec <= 30) {
-    confidence += 4;
-    reasons.push(`taken ${Math.round(timeDiffSec)} seconds apart`);
-  }
-
-  // Signal: pHash visual strength
-  if (dist <= 4) {
-    confidence += 10;
-    if (!reasons.some(r => r.includes("near"))) reasons.push("visually near-identical");
-  } else if (dist <= 8) {
-    confidence += 6;
-  }
-
-  // Signal: filename root (same base image, different processing variant)
-  const rootA = extractFilenameRoot(a.filename);
-  const rootB = extractFilenameRoot(b.filename);
-  if (rootA && rootB && rootA === rootB) {
-    confidence += 5;
-    reasons.push("sequential captures of the same source");
-  }
-
-  confidence = Math.min(99, confidence);
-
-  if (confidence < MIN_RECOMMENDATION_CONFIDENCE) {
-    return { valid: false, confidence: 0, groupReason: "" };
-  }
-
-  // Build human-readable group reason
-  let groupReason = "";
-  if (reasons.length >= 2) {
-    const last = reasons[reasons.length - 1];
-    const rest = reasons.slice(0, -1).join(", ");
-    groupReason = `Photos ${rest} and ${last}.`;
-  } else if (reasons.length === 1) {
-    groupReason = `Photos ${reasons[0]}.`;
-  } else {
-    groupReason = "Visually and temporally similar shots.";
-  }
-  groupReason = groupReason.charAt(0).toUpperCase() + groupReason.slice(1);
-
-  return { valid: true, confidence, groupReason };
+function objectJaccardOf(setA: string[], setB: string[]): number {
+  if (setA.length === 0 && setB.length === 0) return 1; // both empty → no conflict
+  const lA = setA.map(s => s.toLowerCase());
+  const lB = setB.map(s => s.toLowerCase());
+  const bSet: {[k:string]:true} = {};
+  lB.forEach(s => { bSet[s] = true; });
+  const inter = lA.filter(s => bSet[s]).length;
+  const union = lA.length + lB.length - inter;
+  return union > 0 ? inter / union : 0;
 }
 
-// ─── Keep Recommendation ──────────────────────────────────────────────────────
+function stage2Validate(a: any, b: any): Stage2Result {
+  const aiA = a.ai_analysis;
+  const aiB = b.ai_analysis;
+
+  const hasDataA = !!(aiA && ((aiA.objects && aiA.objects.length > 0) || aiA.scene || aiA.caption));
+  const hasDataB = !!(aiB && ((aiB.objects && aiB.objects.length > 0) || aiB.scene || aiB.caption));
+  const hasAIData = hasDataA || hasDataB;
+
+  // No AI data on either side → Stage 2 cannot validate semantically
+  if (!hasDataA && !hasDataB) {
+    return { valid: false, objectJaccard: 0, sceneMatch: null, hasAIData: false, label: "no AI data" };
+  }
+
+  const objsA: string[] = aiA?.objects ?? [];
+  const objsB: string[] = aiB?.objects ?? [];
+  const sceneA = (aiA?.scene ?? "").toLowerCase().trim();
+  const sceneB = (aiB?.scene ?? "").toLowerCase().trim();
+
+  // Object overlap gate
+  let objectJaccard = 1; // default = pass when data is missing on one side
+  if (objsA.length > 0 && objsB.length > 0) {
+    objectJaccard = objectJaccardOf(objsA, objsB);
+    if (objectJaccard < STAGE2_OBJ_OVERLAP) {
+      return {
+        valid: false, objectJaccard,
+        sceneMatch: (sceneA && sceneB) ? sceneA === sceneB : null,
+        hasAIData, label: `object overlap ${Math.round(objectJaccard * 100)}% < ${Math.round(STAGE2_OBJ_OVERLAP * 100)}%`
+      };
+    }
+  }
+
+  // Scene match gate (only when both sides have scene data)
+  let sceneMatch: boolean|null = null;
+  if (sceneA && sceneB) {
+    sceneMatch = sceneA === sceneB;
+    if (!sceneMatch) {
+      return {
+        valid: false, objectJaccard, sceneMatch, hasAIData,
+        label: `scene mismatch (${sceneA} ≠ ${sceneB})`
+      };
+    }
+  }
+
+  // Build label
+  const parts: string[] = [];
+  if (objsA.length > 0 && objsB.length > 0) parts.push(`${Math.round(objectJaccard * 100)}% object overlap`);
+  if (sceneMatch === true) parts.push(`same ${sceneA} scene`);
+  if (!hasDataA || !hasDataB)  parts.push("partial AI data");
+
+  return { valid: true, objectJaccard, sceneMatch, hasAIData, label: parts.join(" · ") || "AI validated" };
+}
+
+// ─── Union-Find with Bounded Diameter ────────────────────────────────────────
+// Standard Union-Find (path compression + union by rank).
+// The key extension: before merging two groups A and B, ALL cross-pairs
+// (every member of A × every member of B) must independently satisfy
+// Stage 1 AND Stage 2. This prevents transitive drift.
+
+class BoundedUnionFind {
+  private parent: {[id: string]: string} = {};
+  private rnk:    {[id: string]: number} = {};
+  private mbrs:   {[id: string]: string[]} = {};
+
+  constructor(ids: string[]) {
+    ids.forEach(id => {
+      this.parent[id] = id;
+      this.rnk[id] = 0;
+      this.mbrs[id] = [id];
+    });
+  }
+
+  find(x: string): string {
+    if (this.parent[x] !== x) {
+      this.parent[x] = this.find(this.parent[x]);
+    }
+    return this.parent[x];
+  }
+
+  getMembers(x: string): string[] {
+    return this.mbrs[this.find(x)] ?? [x];
+  }
+
+  /** Try to merge the groups containing a.id and b.id.
+   *  Before merging, verifies ALL cross-pairs exist in validPairKeys
+   *  (i.e., they individually passed Stage 1 + Stage 2 — bounded diameter).
+   *  Returns true if the merge was performed. */
+  tryMerge(aId: string, bId: string, validPairKeys: {[k: string]: true}): boolean {
+    const rootA = this.find(aId);
+    const rootB = this.find(bId);
+    if (rootA === rootB) return false;
+
+    const membersA = this.mbrs[rootA] ?? [];
+    const membersB = this.mbrs[rootB] ?? [];
+
+    if (membersA.length + membersB.length > MAX_GROUP_SIZE) return false;
+
+    // Bounded diameter: ALL cross-pairs must be validated
+    for (let i = 0; i < membersA.length; i++) {
+      for (let j = 0; j < membersB.length; j++) {
+        const mA = membersA[i];
+        const mB = membersB[j];
+        // The triggering pair is already validated by the caller
+        if ((mA === aId && mB === bId) || (mA === bId && mB === aId)) continue;
+        const key = mA < mB ? mA + "|" + mB : mB + "|" + mA;
+        if (!validPairKeys[key]) return false;
+      }
+    }
+
+    // Union by rank
+    const ra = this.rnk[rootA] ?? 0;
+    const rb = this.rnk[rootB] ?? 0;
+    let newRoot: string, oldRoot: string;
+    if (ra >= rb) { newRoot = rootA; oldRoot = rootB; }
+    else          { newRoot = rootB; oldRoot = rootA; }
+    if (ra === rb) this.rnk[newRoot] = ra + 1;
+
+    this.parent[oldRoot] = newRoot;
+    this.mbrs[newRoot] = membersA.concat(membersB);
+
+    return true;
+  }
+
+  /** Return {root → memberIds[]} for groups with ≥ 2 members */
+  getGroups(): Array<string[]> {
+    const byRoot: {[root: string]: string[]} = {};
+    const ids = Object.keys(this.parent);
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      const root = this.find(id);
+      if (!byRoot[root]) byRoot[root] = [];
+      byRoot[root].push(id);
+    }
+    return Object.keys(byRoot)
+      .map(r => byRoot[r])
+      .filter(g => g.length >= 2);
+  }
+}
+
+// ─── Quality Ranking ──────────────────────────────────────────────────────────
+// Ranks each photo in a group by:
+//   1. Sharpness    — penalise blurred_ prefix heavily
+//   2. Exposure     — penalise dark_ / bright_ prefixes
+//   3. Face quality — reward photos with detected faces (portrait quality)
+//   4. Resolution   — reward larger file_size (proxy for pixel count)
+//   5. clipProxy    — pHash-derived visual clarity tie-breaker
 //
-// Score each item in the group to recommend which one to keep.
-// Reasons are returned for display.
+// Top-ranked photo → KEEP. Rest → deletion candidates with stated reason.
 
 interface KeepRecommendation {
   id: string;
   reasons: string[];
 }
 
-function selectBestToKeep(group: any[]): KeepRecommendation {
-  const scores = group.map(item => {
-    let score = 0;
-    const reasons: string[] = [];
-
-    // Is it an unprocessed original?
-    if (isOriginalFile(item.filename)) {
-      score += 30;
-      reasons.push("Original (unprocessed)");
-    }
-
-    // File size (proxy for resolution — largest = highest quality)
-    const maxSize = Math.max(...group.map(i => i.file_size));
-    if (item.file_size === maxSize && group.length > 1) {
-      score += 20;
-      reasons.push("Highest resolution");
-    } else if (item.file_size >= maxSize * 0.95) {
-      score += 10;
-      reasons.push("Near-highest resolution");
-    }
-
-    // Recency (for edited versions — the newest edit is preferred)
-    const latestTime = Math.max(...group.map(i => new Date(i.taken_at).getTime()));
-    if (new Date(item.taken_at).getTime() === latestTime && group.length > 1) {
-      score += 5;
-    }
-
-    return { item, score, reasons };
-  });
-
-  scores.sort((a, b) => b.score - a.score);
-  const best = scores[0];
-
-  // Always show at least one reason
-  if (best.reasons.length === 0) best.reasons.push("Largest file");
-
-  return { id: best.item.id, reasons: best.reasons };
+function qualityScore(item: any, maxSize: number, clipProxy: number): number {
+  const fn = item.filename.toLowerCase();
+  let s = 0;
+  // Sharpness
+  if (fn.includes("blurred"))    s -= 45;
+  else if (isOriginalFile(item.filename)) s += 25;
+  // Exposure
+  if (fn.includes("dark"))       s -= 20;
+  else if (fn.includes("bright")) s -=  8;
+  // Face quality (people_count 1–4 = likely portrait)
+  const pc = item.ai_analysis?.people_count ?? 0;
+  if (pc >= 1 && pc <= 4) s += 12;
+  // Resolution
+  if (maxSize > 0) s += Math.round((item.file_size / maxSize) * 20);
+  // Visual clarity proxy (CLIP approximation via pHash)
+  s += Math.round(clipProxy * 10);
+  return s;
 }
 
-// ─── Two-Stage Grouping Entry Point ───────────────────────────────────────────
+function selectBestToKeep(
+  group: any[],
+  pairClipProxy: {[key: string]: number}
+): KeepRecommendation {
+  const maxSize = group.reduce((m, i) => Math.max(m, i.file_size), 0);
+
+  const scored = group.map(item => {
+    // Average clipProxy against all other group members
+    let clipSum = 0, clipCount = 0;
+    group.forEach(other => {
+      if (other.id === item.id) return;
+      const key = item.id < other.id ? item.id + "|" + other.id : other.id + "|" + item.id;
+      clipSum += pairClipProxy[key] ?? 0;
+      clipCount++;
+    });
+    const avgClip = clipCount > 0 ? clipSum / clipCount : 0;
+
+    const qScore = qualityScore(item, maxSize, avgClip);
+    const reasons: string[] = [];
+
+    if (isOriginalFile(item.filename)) reasons.push("Original (unprocessed)");
+    if (item.file_size === maxSize && group.length > 1) reasons.push("Highest resolution");
+    else if (item.file_size >= maxSize * 0.9 && group.length > 1) reasons.push("Near-highest resolution");
+    if ((item.ai_analysis?.people_count ?? 0) >= 1) reasons.push("Contains faces");
+    if (reasons.length === 0) reasons.push("Best quality score");
+
+    return { item, qScore, reasons };
+  });
+
+  scored.sort((a, b) => b.qScore - a.qScore);
+  return { id: scored[0].item.id, reasons: scored[0].reasons };
+}
+
+// ─── SimilarGroup Output Type ─────────────────────────────────────────────────
 
 interface SimilarGroup {
   group: any[];
@@ -371,58 +351,129 @@ interface SimilarGroup {
   keepRecommendation: KeepRecommendation;
 }
 
+// ─── Main Entry Point ─────────────────────────────────────────────────────────
+
 function groupSimilarPhotos(
   items: any[],
   exactDupIds: Set<string>,
   nearDupIds: Set<string>
 ): SimilarGroup[] {
-  const groups: SimilarGroup[] = [];
-  const visited = new Set<string>();
+
   const pool = items.filter(it => !exactDupIds.has(it.id) && !nearDupIds.has(it.id));
+  if (pool.length < 2) return [];
+
+  // Build id → item lookup
+  const byId: {[id: string]: any} = {};
+  pool.forEach(it => { byId[it.id] = it; });
+
+  // ── Generate valid pairs ─────────────────────────────────────────────────
+  interface PairRecord { aId: string; bId: string; key: string; confidence: number; clipProxy: number; label: string; }
+  const validPairs: PairRecord[] = [];
+  const validPairKeys: {[k: string]: true} = {};
+  const pairClipProxy: {[k: string]: number} = {};
+  const pairLabel: {[k: string]: string} = {};
+  const pairConfidence: {[k: string]: number} = {};
 
   for (let i = 0; i < pool.length; i++) {
-    const seed = pool[i];
-    if (visited.has(seed.id)) continue;
-
-    const candidates: Array<{ item: any; validation: ValidationResult }> = [];
-
     for (let j = i + 1; j < pool.length; j++) {
-      const candidate = pool[j];
-      if (visited.has(candidate.id)) continue;
+      const a = pool[i];
+      const b = pool[j];
 
-      // ── STAGE 1: Candidate gate ───────────────────────────────────────────
-      if (!isCandidatePair(seed, candidate)) continue;
+      // ── STAGE 1 (hard AND gate) ──────────────────────────────────────────
+      const s1 = stage1Gate(a, b);
+      if (!s1.pass) continue;
 
-      // ── STAGE 2: AI validation ────────────────────────────────────────────
-      const validation = validatePair(seed, candidate);
-      if (validation.valid) {
-        candidates.push({ item: candidate, validation });
+      // ── STAGE 2 (semantic validation) ───────────────────────────────────
+      const s2 = stage2Validate(a, b);
+
+      let accepted = false;
+      if (s2.hasAIData) {
+        accepted = s2.valid;
+        // If AI data exists but validation fails → reject entirely
+      } else {
+        // No AI data on either side → accept only when pHash is very tight (≤ 4)
+        // representing near-identical pixel content (likely same burst shot)
+        accepted = s1.pHashDist <= 4;
+      }
+      if (!accepted) continue;
+
+      // ── Confidence Score ────────────────────────────────────────────────
+      // clipProxy (pHash-derived CLIP approximation) scores confidence only.
+      // It is never used to gate acceptance.
+      let conf = MIN_CONFIDENCE;
+      conf += Math.round(s1.clipProxy * 15); // visual clarity (CLIP proxy) → max +15
+      conf += Math.round(s2.objectJaccard * 10); // semantic overlap        → max +10
+      if (s2.sceneMatch === true) conf += 7;    // scene confirmation        → +7
+      if (s1.timeDiffSec <= 5)   conf += 5;    // burst sequence            → +5
+      else if (s1.timeDiffSec <= 15) conf += 3;
+      conf = Math.min(99, conf);
+      if (conf < MIN_CONFIDENCE) continue;
+
+      // ── Build label ─────────────────────────────────────────────────────
+      const labelParts: string[] = [];
+      if (s1.timeDiffSec <= 10) labelParts.push(`burst (${Math.round(s1.timeDiffSec)}s apart)`);
+      else labelParts.push(`${Math.round(s1.timeDiffSec)}s apart`);
+      if (s1.pHashDist <= 4) labelParts.push("near-identical pixels");
+      else if (s1.pHashDist <= 7) labelParts.push("high visual similarity");
+      if (s2.label && s2.hasAIData) labelParts.push(s2.label);
+      const label = labelParts.join(" · ");
+
+      const key = a.id < b.id ? a.id + "|" + b.id : b.id + "|" + a.id;
+      validPairs.push({ aId: a.id, bId: b.id, key, confidence: conf, clipProxy: s1.clipProxy, label });
+      validPairKeys[key] = true;
+      pairClipProxy[key] = s1.clipProxy;
+      pairLabel[key] = label;
+      pairConfidence[key] = conf;
+    }
+  }
+
+  if (validPairs.length === 0) return [];
+
+  // ── Union-Find with bounded diameter ────────────────────────────────────
+  const uf = new BoundedUnionFind(pool.map(it => it.id));
+
+  // Sort pairs by confidence descending so highest-quality pairs are merged first
+  validPairs.sort((a, b) => b.confidence - a.confidence);
+
+  for (let p = 0; p < validPairs.length; p++) {
+    const { aId, bId } = validPairs[p];
+    uf.tryMerge(aId, bId, validPairKeys);
+  }
+
+  // ── Extract and format groups ────────────────────────────────────────────
+  const rawGroups = uf.getGroups();
+  const results: SimilarGroup[] = [];
+
+  for (let g = 0; g < rawGroups.length; g++) {
+    const memberIds = rawGroups[g];
+    const groupItems = memberIds.map(id => byId[id]);
+
+    // Best pair → explanation and confidence for the group
+    let bestConf = 0, bestLabel = "";
+    for (let x = 0; x < memberIds.length; x++) {
+      for (let y = x + 1; y < memberIds.length; y++) {
+        const k = memberIds[x] < memberIds[y]
+          ? memberIds[x] + "|" + memberIds[y]
+          : memberIds[y] + "|" + memberIds[x];
+        const c = pairConfidence[k] ?? 0;
+        if (c > bestConf) { bestConf = c; bestLabel = pairLabel[k] ?? ""; }
       }
     }
 
-    if (candidates.length === 0) continue;
-
-    // Sort by confidence descending, cap at MAX_GROUP_SIZE - 1 (seed is always included)
-    candidates.sort((a, b) => b.validation.confidence - a.validation.confidence);
-    const accepted = candidates.slice(0, MAX_GROUP_SIZE - 1);
-
-    const groupItems = [seed, ...accepted.map(c => c.item)];
-    const bestValidation = accepted[0].validation;
-
-    // Mark all as visited
-    for (const { item } of accepted) visited.add(item.id);
-    visited.add(seed.id);
-
-    groups.push({
+    results.push({
       group: groupItems,
-      explanation: bestValidation.groupReason,
-      confidence: bestValidation.confidence,
-      keepRecommendation: selectBestToKeep(groupItems),
+      explanation: bestLabel
+        ? bestLabel.charAt(0).toUpperCase() + bestLabel.slice(1)
+        : "Photos taken in close succession.",
+      confidence: bestConf,
+      keepRecommendation: selectBestToKeep(groupItems, pairClipProxy),
     });
   }
 
-  return groups;
+  // Return sorted by confidence descending
+  return results.sort((a, b) => b.confidence - a.confidence);
 }
+
 
 
 export default function RecommendationsPage() {
