@@ -143,6 +143,7 @@ export default function MediaDetailPage() {
               src={getOriginalUrl(id)}
               alt={asset.filename}
               className="w-full h-auto object-contain max-h-[70vh]"
+              draggable={false}
             />
           </div>
         </div>

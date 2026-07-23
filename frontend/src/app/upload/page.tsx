@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { useMutation } from "@tanstack/react-query";
 import { uploadMedia, getMediaStatus } from "@/lib/api";
 import { formatFileSize } from "@/lib/utils";
 import PageHeader from "@/components/layout/PageHeader";
@@ -11,10 +10,12 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { AssetStatus } from "@/lib/types";
 
+const MAX_CONCURRENT_UPLOADS = 5;
+
 interface QueueItem {
   id: string;
   file: File;
-  status: "queued" | "uploading" | "polling" | "done" | "error";
+  status: "queued" | "uploading" | "polling" | "done" | "error" | "duplicate";
   assetId?: string;
   assetStatus?: AssetStatus;
   error?: string;
@@ -48,10 +49,6 @@ export default function UploadPage() {
           if (status.status === "READY") {
             updateItem(queueId, { status: "done", assetStatus: "READY", progress: 100 });
             setToast({ message: "Photo fully processed and ready!", type: "success" });
-            // Redirect to gallery once processed
-            setTimeout(() => {
-              router.push("/gallery");
-            }, 1200);
           } else if (status.status === "FAILED") {
             updateItem(queueId, { status: "error", assetStatus: "FAILED", error: status.error_message || "Processing failed" });
             setToast({ message: `Processing failed: ${status.error_message || "Unknown error"}`, type: "error" });
@@ -64,30 +61,60 @@ export default function UploadPage() {
       };
       poll();
     },
-    [updateItem, router]
+    [updateItem]
   );
 
-  const uploadMutation = useMutation({
-    mutationFn: async (item: QueueItem) => {
-      updateItem(item.id, { status: "uploading", progress: 50 });
+  // ── Core Bounded Upload Queue Scheduler ──────────────────────────────────
+  const startUpload = useCallback(async (item: QueueItem) => {
+    // Mark as uploading immediately to avoid double mutates
+    updateItem(item.id, { status: "uploading", progress: 20 });
+    
+    try {
       const result = await uploadMedia(item.file);
-      updateItem(item.id, { status: "polling", assetId: result.id, assetStatus: result.status, progress: 75 });
+      updateItem(item.id, {
+        status: "polling",
+        assetId: result.id,
+        assetStatus: result.status,
+        progress: 75,
+        error: undefined
+      });
       pollStatus(item.id, result.id);
-      return result;
-    },
-    onSuccess: (data, item) => {
-      setToast({ message: `Successfully uploaded ${item.file.name}!`, type: "success" });
-    },
-    onError: (error: any, item: QueueItem) => {
+    } catch (error: any) {
       const isConflict = error.response?.status === 409 || error.message?.includes("409");
-      const msg = isConflict
-        ? "Duplicate file detected. This file already exists in the gallery."
-        : error.response?.data?.detail?.message || error.response?.data?.detail || error.message || "Upload failed.";
-      
-      updateItem(item.id, { status: "error", error: msg, progress: 0 });
-      setToast({ message: `Failed to upload ${item.file.name}: ${msg}`, type: "error" });
-    },
-  });
+      if (isConflict) {
+        const duplicateId = error.response?.data?.detail?.duplicate_id;
+        updateItem(item.id, {
+          status: "duplicate",
+          assetId: duplicateId,
+          progress: 100,
+          error: "This photo is already in your gallery."
+        });
+        setToast({ message: `Already in gallery: ${item.file.name}`, type: "success" });
+      } else {
+        const msg = error.response?.data?.detail?.message || error.response?.data?.detail || error.message || "Upload failed.";
+        updateItem(item.id, { status: "error", error: msg, progress: 0 });
+        setToast({ message: `Failed to upload ${item.file.name}: ${msg}`, type: "error" });
+      }
+    }
+  }, [updateItem, pollStatus]);
+
+  // Effect scheduler that triggers next uploads keeping concurrency <= MAX_CONCURRENT_UPLOADS
+  useEffect(() => {
+    const activeCount = queue.filter((item) => item.status === "uploading").length;
+    if (activeCount >= MAX_CONCURRENT_UPLOADS) return;
+
+    // Find all queued items
+    const queuedItems = queue.filter((item) => item.status === "queued");
+    if (queuedItems.length === 0) return;
+
+    // Start as many as we can fit under the concurrency limit
+    const slotsAvailable = MAX_CONCURRENT_UPLOADS - activeCount;
+    const itemsToStart = queuedItems.slice(0, slotsAvailable);
+
+    itemsToStart.forEach((item) => {
+      startUpload(item);
+    });
+  }, [queue, startUpload]);
 
   const addFiles = useCallback(
     (files: FileList | File[]) => {
@@ -102,9 +129,8 @@ export default function UploadPage() {
         }));
 
       setQueue((prev) => [...prev, ...newItems]);
-      newItems.forEach((item) => uploadMutation.mutate(item));
     },
-    [uploadMutation]
+    []
   );
 
   const handleDrop = useCallback(
@@ -120,9 +146,21 @@ export default function UploadPage() {
     setQueue((prev) => prev.filter((item) => item.id !== id));
   };
 
-  const successCount = queue.filter((i) => i.status === "done").length;
-  const processingCount = queue.filter((i) => ["uploading", "polling", "queued"].includes(i.status)).length;
-  const errorCount = queue.filter((i) => i.status === "error").length;
+  const handleRetry = (id: string) => {
+    updateItem(id, { status: "queued", progress: 0, error: undefined, assetStatus: undefined });
+  };
+
+  // ── Stats Calculations ───────────────────────────────────────────────────
+  const totalCount = queue.length;
+  const uploadingCount = queue.filter((i) => i.status === "uploading").length;
+  const waitingCount = queue.filter((i) => i.status === "queued").length;
+  const processingCount = queue.filter((i) => i.status === "polling").length;
+  const readyCount = queue.filter((i) => i.status === "done").length;
+  const failedCount = queue.filter((i) => i.status === "error").length;
+  const duplicateCount = queue.filter((i) => i.status === "duplicate").length;
+
+  const completedCount = readyCount + failedCount + duplicateCount;
+  const progressPercent = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
 
   return (
     <>
@@ -166,22 +204,93 @@ export default function UploadPage() {
         </p>
       </div>
 
-      {/* Upload Queue */}
+      {/* ── Bounded Upload Queue Progress Bar & Stats panel ───────────────── */}
+      {totalCount > 0 && (
+        <div
+          className="mt-8 p-6 rounded-2xl border border-default space-y-6"
+          style={{ backgroundColor: "var(--bg-secondary)" }}
+        >
+          {/* Header & Status */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>
+                {completedCount === totalCount ? "All uploads completed" : `Uploading ${totalCount} photos`}
+              </h2>
+              <p className="text-xs mt-1" style={{ color: "var(--text-secondary)" }}>
+                Overall progress: <span className="font-bold text-[var(--text-primary)]">{completedCount} / {totalCount} complete</span>
+              </p>
+            </div>
+            <span className="text-sm font-black text-brand bg-brand/10 px-3 py-1 rounded-lg border border-brand/20">
+              {progressPercent}%
+            </span>
+          </div>
+
+          {/* Smooth Overall Progress Bar */}
+          <div className="h-2 rounded-full overflow-hidden" style={{ backgroundColor: "var(--bg-tertiary)" }}>
+            <div
+              className="h-full rounded-full transition-all duration-500 bg-brand"
+              style={{ width: `${progressPercent}%` }}
+            />
+          </div>
+
+          {/* Current Activity Stats Breakdown */}
+          <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 pt-2 border-t border-default">
+            {/* 1. Uploading */}
+            <div className="p-3 rounded-xl bg-[var(--bg-tertiary)] text-center space-y-1">
+              <span className="text-lg font-black text-amber-400">{uploadingCount}</span>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">Uploading</p>
+            </div>
+
+            {/* 2. Waiting */}
+            <div className="p-3 rounded-xl bg-[var(--bg-tertiary)] text-center space-y-1">
+              <span className="text-lg font-black text-zinc-400">{waitingCount}</span>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">Waiting</p>
+            </div>
+
+            {/* 3. Processing */}
+            <div className="p-3 rounded-xl bg-[var(--bg-tertiary)] text-center space-y-1">
+              <span className="text-lg font-black text-blue-400 animate-pulse">{processingCount}</span>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">Processing</p>
+            </div>
+
+            {/* 4. Ready */}
+            <div className="p-3 rounded-xl bg-[var(--bg-tertiary)] text-center space-y-1">
+              <span className="text-lg font-black text-emerald-400">{readyCount}</span>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">Ready</p>
+            </div>
+
+            {/* 5. Failed */}
+            <div className="p-3 rounded-xl bg-[var(--bg-tertiary)] text-center space-y-1">
+              <span className="text-lg font-black text-rose-400">{failedCount}</span>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">Failed</p>
+            </div>
+
+            {/* 6. Already in Gallery */}
+            <div className="p-3 rounded-xl bg-[var(--bg-tertiary)] text-center space-y-1">
+              <span className="text-lg font-black text-zinc-500">{duplicateCount}</span>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">In Gallery</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Queue Items List */}
       {queue.length > 0 && (
-        <div className="mt-8">
+        <div className="mt-8 space-y-4">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold" style={{ color: "var(--text-primary)" }}>
-              Upload Queue ({queue.length} files)
-            </h2>
+            <h3 className="text-sm font-bold uppercase tracking-wider text-[var(--text-secondary)]">
+              Files ({queue.length})
+            </h3>
             <div className="flex items-center gap-3 text-xs" style={{ color: "var(--text-secondary)" }}>
-              {successCount > 0 && <span className="text-[var(--success)]">✓ {successCount} ready</span>}
+              {readyCount > 0 && <span className="text-[var(--success)]">✓ {readyCount} ready</span>}
               {processingCount > 0 && <span className="text-[var(--warning)]">⏳ {processingCount} processing</span>}
-              {errorCount > 0 && <span className="text-[var(--error)]">✕ {errorCount} failed</span>}
+              {duplicateCount > 0 && <span className="text-zinc-500">📁 {duplicateCount} in gallery</span>}
+              {failedCount > 0 && <span className="text-[var(--error)]">✕ {failedCount} failed</span>}
             </div>
           </div>
 
           <div
-            className="rounded-lg border border-default divide-y divide-[var(--border-default)]"
+            className="rounded-lg border border-default divide-y divide-[var(--border-default)] overflow-hidden"
             style={{ backgroundColor: "var(--bg-secondary)" }}
           >
             {queue.map((item) => (
@@ -195,14 +304,47 @@ export default function UploadPage() {
                     <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
                       {formatFileSize(item.file.size)}
                     </span>
-                    {item.assetStatus && <StatusBadge status={item.assetStatus} />}
+                    {item.status === "queued" && (
+                      <span className="text-[10px] font-extrabold uppercase bg-zinc-800 text-zinc-400 px-2 py-0.5 rounded border border-zinc-700">
+                        Queued
+                      </span>
+                    )}
+                    {item.status === "uploading" && (
+                      <span className="text-[10px] font-extrabold uppercase bg-amber-950/40 text-amber-400 px-2 py-0.5 rounded border border-amber-900/30 animate-pulse">
+                        Uploading
+                      </span>
+                    )}
+                    {item.status === "polling" && (
+                      <span className="text-[10px] font-extrabold uppercase bg-blue-950/40 text-blue-400 px-2 py-0.5 rounded border border-blue-900/30">
+                        Processing
+                      </span>
+                    )}
+                    {item.status === "done" && (
+                      <span className="text-[10px] font-extrabold uppercase bg-emerald-950/40 text-emerald-400 px-2 py-0.5 rounded border border-emerald-900/30">
+                        Ready
+                      </span>
+                    )}
+                    {item.status === "duplicate" && (
+                      <span className="text-[10px] font-extrabold uppercase bg-zinc-800 text-zinc-400 px-2 py-0.5 rounded border border-zinc-700">
+                        Already in Gallery
+                      </span>
+                    )}
+                    {item.status === "error" && (
+                      <span className="text-[10px] font-extrabold uppercase bg-rose-950/40 text-rose-400 px-2 py-0.5 rounded border border-rose-900/30">
+                        Failed
+                      </span>
+                    )}
                     {item.error && (
-                      <span className="text-xs font-medium" style={{ color: "var(--error)" }}>
+                      <span
+                        className="text-xs font-medium"
+                        style={{ color: item.status === "duplicate" ? "var(--text-secondary)" : "var(--error)" }}
+                      >
                         {item.error}
                       </span>
                     )}
                   </div>
-                  {/* Progress bar */}
+
+                  {/* Individual active progress bar */}
                   {(item.status === "uploading" || item.status === "polling") && (
                     <div className="mt-2 h-1 rounded-full overflow-hidden" style={{ backgroundColor: "var(--bg-tertiary)" }}>
                       <div
@@ -211,14 +353,14 @@ export default function UploadPage() {
                         }`}
                         style={{
                           width: `${item.progress}%`,
-                          backgroundColor: "var(--accent-primary)",
+                          backgroundColor: item.status === "polling" ? "var(--brand)" : "var(--accent-primary)",
                         }}
                       />
                     </div>
                   )}
                 </div>
                 <div className="flex items-center gap-1 flex-shrink-0">
-                  {item.status === "done" && item.assetId && (
+                  {(item.status === "done" || (item.status === "duplicate" && item.assetId)) && item.assetId && (
                     <Link
                       href={`/media/${item.assetId}`}
                       className="p-1.5 rounded-md hover:bg-[var(--bg-tertiary)] transition-colors"
@@ -229,7 +371,7 @@ export default function UploadPage() {
                   )}
                   {item.status === "error" && (
                     <button
-                      onClick={() => uploadMutation.mutate(item)}
+                      onClick={() => handleRetry(item.id)}
                       className="p-1.5 rounded-md hover:bg-[var(--bg-tertiary)] transition-colors"
                       title="Retry upload"
                     >
@@ -250,7 +392,7 @@ export default function UploadPage() {
         </div>
       )}
 
-      {/* Floating Toast Notification */}
+      {/* Floating Toast */}
       {toast && (
         <div
           className="fixed bottom-20 right-4 z-50 flex items-center gap-2.5 px-4 py-3 rounded-xl border border-default shadow-lg transition-all duration-300 animate-slide-in"
