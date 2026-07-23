@@ -40,6 +40,7 @@ def get_default_provider() -> VisionProvider:
     # Lazy imports prevent circular dependencies and keep startup fast
     from app.modules.media.services.ai_analysis.null_provider import NullProvider
     from app.modules.media.services.ai_analysis.gemini_provider import GeminiVisionProvider
+    from app.modules.media.services.ai_analysis.local_analysis_provider import LocalVisionProvider
 
     if not settings.AI_ANALYSIS_ENABLED:
         logger.info("ProviderFactory: AI_ANALYSIS_ENABLED=False. Returning NullProvider.")
@@ -47,7 +48,7 @@ def get_default_provider() -> VisionProvider:
 
     provider_name = settings.VISION_PROVIDER.lower().strip()
 
-    if provider_name == "gemini":
+    if provider_name == "gemini" and settings.GEMINI_API_KEY:
         logger.info("ProviderFactory: Selecting GeminiVisionProvider.")
         return GeminiVisionProvider()
 
@@ -55,9 +56,5 @@ def get_default_provider() -> VisionProvider:
         logger.info("ProviderFactory: VISION_PROVIDER=null. Returning NullProvider.")
         return NullProvider()
 
-    # Unknown provider — warn and fall back to NullProvider
-    logger.warning(
-        f"ProviderFactory: Unknown VISION_PROVIDER='{provider_name}'. "
-        "Falling back to NullProvider. Check your .env configuration."
-    )
-    return NullProvider()
+    logger.info("ProviderFactory: Selecting LocalVisionProvider for rich semantic metadata generation.")
+    return LocalVisionProvider()

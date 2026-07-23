@@ -18,17 +18,16 @@ class ExplanationService:
         asset: MediaAsset,
         score: float,
         boost_reasons: Optional[List[str]] = None,
+        confidence_level: Optional[str] = None,
     ) -> List[str]:
         """
         Build a human-readable explanation list for a search result.
 
         Sources (in priority order):
-        1. boost_reasons from HybridReranker (Memory Record signals)
+        1. boost_reasons from HybridReranker & Intent Validation
         2. Duplicate check
-        3. Embedding-based quality signals
+        3. Scene & Color signals
         4. Similarity percentage + confidence level
-
-        Returns up to 5 explanation strings.
         """
         explanations: List[str] = []
         query_lower = query_text.lower()
@@ -43,8 +42,7 @@ class ExplanationService:
                 "Potential duplicate",
             ]
 
-        # ── 1. Hybrid reranker boost reasons (Memory Record signals) ──────────
-        # De-duplicate while preserving insertion order
+        # ── 1. Hybrid reranker & Intent boost reasons (Memory Record signals) ──
         seen: set = set()
         for reason in (boost_reasons or []):
             if reason and reason not in seen:
@@ -55,12 +53,12 @@ class ExplanationService:
 
         # ── 2. Embedding signal (if no Memory Record boosted this result) ─────
         if not explanations:
-            if similarity_pct >= 90:
-                explanations.append("High semantic similarity to your search")
+            if similarity_pct >= 85:
+                explanations.append("High visual & semantic similarity")
             else:
                 explanations.append("Semantic similarity to your search")
 
-        # ── 3. Indoor/Outdoor context (from legacy is_indoor field) ───────────
+        # ── 3. Indoor/Outdoor context ─────────────────────────────────────────
         if len(explanations) < 4 and ai:
             if ai.indoor_outdoor:
                 explanations.append(
@@ -69,23 +67,15 @@ class ExplanationService:
             elif ai.is_indoor is not None:
                 explanations.append("Indoor scene" if ai.is_indoor else "Outdoor scene")
 
-        # ── 4. Color match ────────────────────────────────────────────────────
-        if len(explanations) < 4:
-            colors = [
-                "yellow", "blue", "red", "green", "white", "black",
-                "orange", "purple", "brown", "pink",
-            ]
-            for color in colors:
-                if color in query_lower:
-                    if ai and ai.caption and color in ai.caption.lower():
-                        explanations.append(f"{color.capitalize()} colors dominate the image")
-                    break
-
-        # ── 5. Similarity % + confidence ──────────────────────────────────────
+        # ── 4. Similarity % + Confidence Level ────────────────────────────────
         explanations.append(f"Similarity: {similarity_pct}%")
-        if similarity_pct >= 85:
-            explanations.append("Confidence: High")
+        if confidence_level:
+            explanations.append(f"Confidence: {confidence_level}")
+        elif similarity_pct >= 85:
+            explanations.append("Confidence: Very High")
         elif similarity_pct >= 70:
+            explanations.append("Confidence: High")
+        elif similarity_pct >= 50:
             explanations.append("Confidence: Medium")
         else:
             explanations.append("Confidence: Low")

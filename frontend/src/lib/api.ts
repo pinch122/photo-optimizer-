@@ -69,8 +69,53 @@ export async function listMedia(
   return data;
 }
 
-export async function deleteMedia(id: string): Promise<{ message: string }> {
-  const { data } = await api.delete<{ message: string }>(`/media/${id}`);
+export async function deleteMedia(id: string, deletedFrom?: string): Promise<{ message: string }> {
+  const { data } = await api.delete<{ message: string }>(`/media/${id}`, {
+    params: { permanent: false, deleted_from: deletedFrom },
+  });
+  return data;
+}
+
+export async function permanentlyDeleteMedia(id: string): Promise<{ message: string }> {
+  const { data } = await api.delete<{ message: string }>(`/media/${id}`, {
+    params: { permanent: true },
+  });
+  return data;
+}
+
+export async function restoreMedia(id: string): Promise<{ message: string }> {
+  const { data } = await api.post<{ message: string }>(`/media/${id}/restore`);
+  return data;
+}
+
+// ─── Trash / Recycle Bin ──────────────────────────────────────────
+export async function getTrashMedia(
+  limit: number = 50000,
+  offset: number = 0
+): Promise<MediaListResponse> {
+  const { data } = await api.get<MediaListResponse>("/media/trash", {
+    params: { limit, offset },
+  });
+  return data;
+}
+
+export async function getTrashCount(): Promise<{ count: number }> {
+  const { data } = await api.get<{ count: number }>("/media/trash/count");
+  return data;
+}
+
+export async function emptyTrash(): Promise<{ message: string; deleted_count: number }> {
+  const { data } = await api.delete<{ message: string; deleted_count: number }>("/media/trash/empty");
+  return data;
+}
+
+export async function bulkRestoreTrash(ids: string[]): Promise<{ message: string; restored_count: number }> {
+  const { data } = await api.post<{ message: string; restored_count: number }>("/media/trash/restore-bulk", { ids });
+  return data;
+}
+
+export async function bulkPermanentlyDeleteTrash(ids: string[]): Promise<{ message: string; deleted_count: number }> {
+  const { data } = await api.post<{ message: string; deleted_count: number }>("/media/trash/delete-permanent-bulk", { ids });
   return data;
 }
 

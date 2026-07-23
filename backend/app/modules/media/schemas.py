@@ -57,6 +57,23 @@ class AIAnalysisResponse(BaseModel):
     # AI metadata
     ai_confidence: Optional[float] = None
 
+class QualityAssessmentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    overall_score: float
+    quality_grade: str
+    sharpness_score: Optional[float] = None
+    blur_score: Optional[float] = None
+    exposure_score: Optional[float] = None
+    brightness_score: Optional[float] = None
+    aesthetic_score: Optional[float] = None
+    resolution_score: Optional[float] = None
+    confidence: float
+    issues: Optional[List[str]] = None
+    recommendation: Optional[str] = None
+    provider_versions: Optional[Dict[str, str]] = None
+    evaluated_at: datetime
+
 class MediaAssetResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -68,9 +85,14 @@ class MediaAssetResponse(BaseModel):
     status: AssetStatus
     taken_at: datetime
     created_at: datetime
+    is_deleted: Optional[bool] = False
+    deleted_at: Optional[datetime] = None
+    deleted_from: Optional[str] = None
+    remaining_days: Optional[int] = None
     photo_metadata: Optional[PhotoMetadataResponse] = None
     p_hash: Optional[str] = None
     ai_analysis: Optional[AIAnalysisResponse] = None
+    quality_assessment: Optional[QualityAssessmentResponse] = None
 
 class UploadResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -100,20 +122,29 @@ class SearchResultResponse(BaseModel):
     status: AssetStatus
     taken_at: datetime
     created_at: datetime
+    is_deleted: Optional[bool] = False
+    deleted_at: Optional[datetime] = None
+    deleted_from: Optional[str] = None
+    remaining_days: Optional[int] = None
     score: float
     explanation: Optional[List[str]] = None
     photo_metadata: Optional[PhotoMetadataResponse] = None
     p_hash: Optional[str] = None
     ai_analysis: Optional[AIAnalysisResponse] = None
+    quality_assessment: Optional[QualityAssessmentResponse] = None
 
 
 class SearchResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     items: List[SearchResultResponse]
+    excellent_matches: Optional[List[SearchResultResponse]] = None
+    similar_photos: Optional[List[SearchResultResponse]] = None
     total: int
+    total_similar: Optional[int] = 0
     limit: int
     offset: int
+    message: Optional[str] = None
 
 
 class SimilarImageResponse(BaseModel):
@@ -131,3 +162,10 @@ class MediaListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+class BulkTrashRequest(BaseModel):
+    ids: List[UUID]
+
+class TrashCountResponse(BaseModel):
+    count: int
+

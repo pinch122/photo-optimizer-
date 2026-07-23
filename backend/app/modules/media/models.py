@@ -36,6 +36,11 @@ class MediaAsset(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
 
+    # Soft Deletion / Recycle Bin
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, index=True, nullable=False)
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), index=True, nullable=True)
+    deleted_from: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
     # Relationships
     photo_metadata: Mapped[Optional["PhotoMetadata"]] = relationship(
         back_populates="media_asset",
@@ -47,6 +52,11 @@ class MediaAsset(Base):
         cascade="all, delete-orphan"
     )
     ai_analysis: Mapped[Optional["ImageAIAnalysis"]] = relationship(
+        back_populates="media_asset",
+        cascade="all, delete-orphan",
+        uselist=False
+    )
+    quality_assessment: Mapped[Optional["ImageQualityAssessment"]] = relationship(
         back_populates="media_asset",
         cascade="all, delete-orphan",
         uselist=False
@@ -209,3 +219,58 @@ class ImageAIAnalysis(Base):
 
     # Back-reference
     media_asset: Mapped["MediaAsset"] = relationship(back_populates="ai_analysis")
+
+
+class ImageQualityAssessment(Base):
+    """
+    Persistent Quality Record — structured multi-metric quality assessment of a media asset.
+
+    One-to-one with MediaAsset. Persisted automatically during ingestion.
+
+    Fields
+    ------
+    overall_score       Fused quality score [0.0, 1.0].
+    quality_grade       QualityGrade enum name (EXCELLENT, GOOD, FAIR, POOR, VERY_POOR).
+    sharpness_score     Measured sharpness score [0.0, 1.0] (or None if unmeasured).
+    blur_score          Raw blur estimate from ingestion (or None).
+    exposure_score      Measured exposure score [0.0, 1.0] (or None).
+    brightness_score    Raw brightness mean [0.0, 1.0] (or None).
+    aesthetic_score     Measured CLIP-IQA aesthetic score [0.0, 1.0] (or None).
+    resolution_score    Measured resolution score [0.0, 1.0] (or None).
+    confidence          Aggregate confidence score [0.0, 1.0].
+    issues              JSON list of detected issue strings.
+    recommendation      Human-readable recommendation summary.
+    provider_versions   JSON dict mapping provider name -> provider semver.
+    provider_scores     JSON dict with per-provider raw metric breakdowns.
+    evaluated_at        Timestamp when evaluation was executed.
+    """
+    __tablename__ = "image_quality_assessments"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    media_asset_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("media_assets.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+        index=True
+    )
+    overall_score: Mapped[float] = mapped_column(Float, nullable=False)
+    quality_grade: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    sharpness_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    blur_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    exposure_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    brightness_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    aesthetic_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    resolution_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    issues: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True)
+    recommendation: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    provider_versions: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    provider_scores: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    evaluated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False
+    )
+
+    # Back-reference
+    media_asset: Mapped["MediaAsset"] = relationship(back_populates="quality_assessment")

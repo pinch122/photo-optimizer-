@@ -285,7 +285,11 @@ class AIAnalysisService:
         if result.mood is not None:
             record.mood = result.mood
         if result.keywords is not None:
-            record.keywords = result.keywords
+            existing_phash = (record.keywords or {}).get("p_hash")
+            new_kw = dict(result.keywords)
+            if existing_phash and "p_hash" not in new_kw:
+                new_kw["p_hash"] = existing_phash
+            record.keywords = new_kw
 
         # AI metadata
         if result.ai_confidence is not None:

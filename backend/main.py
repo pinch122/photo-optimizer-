@@ -18,7 +18,13 @@ async def lifespan(app: FastAPI):
     # Initialize PostgreSQL tables asynchronously
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database tables initialized successfully.")
+        from sqlalchemy import text
+        await conn.execute(text("ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT FALSE;"))
+        await conn.execute(text("ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE NULL;"))
+        await conn.execute(text("ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS deleted_from VARCHAR(255) NULL;"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_media_assets_is_deleted ON media_assets (is_deleted);"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_media_assets_deleted_at ON media_assets (deleted_at);"))
+    logger.info("Database tables & soft deletion columns initialized successfully.")
     
     yield
     

@@ -81,7 +81,7 @@ export default function GalleryPage() {
     if (!photoToDelete) return;
     setIsDeleting(true);
     try {
-      await deleteMedia(photoToDelete.id);
+      await deleteMedia(photoToDelete.id, "gallery");
       
       // Instantly hide from UI
       setDeletedIds((prev) => {
@@ -89,12 +89,14 @@ export default function GalleryPage() {
         next.add(photoToDelete.id);
         return next;
       });
-      setToast({ message: "Photo deleted successfully.", type: "success" });
+      setToast({ message: "Moved to Recycle Bin.", type: "success" });
       setPhotoToDelete(null);
 
       // Invalidate queries to refresh lists
       queryClient.invalidateQueries({ queryKey: ["gallery"] });
       queryClient.invalidateQueries({ queryKey: ["recent-uploads"] });
+      queryClient.invalidateQueries({ queryKey: ["trash-count"] });
+      queryClient.invalidateQueries({ queryKey: ["trash-media"] });
     } catch (err: any) {
       const msg = err.response?.data?.detail || err.message || "Failed to delete photo.";
       setToast({ message: `Failed to delete photo: ${msg}`, type: "error" });
@@ -307,35 +309,20 @@ export default function GalleryPage() {
           >
             <h3
               id="delete-dialog-title"
-              className="text-lg font-semibold tracking-tight mb-2"
+              className="text-lg font-bold tracking-tight mb-2"
               style={{ color: "var(--text-primary)" }}
             >
-              Delete Photo?
+              Move to Recycle Bin?
             </h3>
-            <p className="text-sm mb-4" style={{ color: "var(--text-secondary)" }}>
-              Are you sure you want to permanently delete this photo?
+            <p className="text-xs mb-4 leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+              This photo can be restored for 30 days before permanent deletion.
             </p>
-            
-            <div
-              className="p-3 rounded-lg text-xs space-y-1.5 mb-6 border border-default"
-              style={{ backgroundColor: "var(--bg-primary)", color: "var(--text-secondary)" }}
-            >
-              <p className="font-semibold" style={{ color: "var(--text-primary)" }}>
-                This action will also remove:
-              </p>
-              <ul className="list-disc pl-4 space-y-0.5" style={{ color: "var(--text-secondary)" }}>
-                <li>Original image file</li>
-                <li>Generated thumbnail</li>
-                <li>Extracted metadata (EXIF)</li>
-                <li>AI vector embedding</li>
-              </ul>
-            </div>
 
-            <div className="flex items-center justify-end gap-3">
+            <div className="flex items-center justify-end gap-3 pt-2">
               <button
                 disabled={isDeleting}
                 onClick={() => setPhotoToDelete(null)}
-                className="px-4 py-2 rounded-lg text-sm font-medium border border-default hover:bg-[var(--bg-tertiary)] transition-colors disabled:opacity-50"
+                className="px-4 py-2 rounded-xl text-xs font-semibold border border-default hover:bg-[var(--bg-tertiary)] transition-colors disabled:opacity-50"
                 style={{ color: "var(--text-secondary)" }}
               >
                 Cancel
@@ -343,12 +330,12 @@ export default function GalleryPage() {
               <button
                 disabled={isDeleting}
                 onClick={handleDelete}
-                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-white bg-red-600 hover:bg-red-700 transition-colors disabled:opacity-50 min-w-[80px]"
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-xs font-extrabold text-white bg-rose-500 hover:bg-rose-600 transition-colors disabled:opacity-50"
               >
                 {isDeleting ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
                 ) : (
-                  "Delete"
+                  "Move to Bin"
                 )}
               </button>
             </div>

@@ -26,8 +26,15 @@ class MockSentenceTransformer:
 import sentence_transformers
 sentence_transformers.SentenceTransformer = MockSentenceTransformer
 
-# 3. Initialize in-memory SQLite for test database
-test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+from sqlalchemy.pool import StaticPool
+
+# 3. Initialize in-memory SQLite for test database (StaticPool preserves in-memory DB across connections)
+test_engine = create_async_engine(
+    "sqlite+aiosqlite:///:memory:",
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
+    echo=False
+)
 test_session_local = async_sessionmaker(
     bind=test_engine,
     class_=AsyncSession,

@@ -2,22 +2,41 @@
 
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getMediaDetail, getThumbnailUrl, getOriginalUrl, reprocessMedia, getSimilarMedia } from "@/lib/api";
+import { getMediaDetail, getThumbnailUrl, getOriginalUrl, reprocessMedia, getSimilarMedia, deleteMedia } from "@/lib/api";
 import { formatFileSize, formatDate } from "@/lib/utils";
 import PageHeader from "@/components/layout/PageHeader";
 import StatusBadge from "@/components/shared/StatusBadge";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import {
   ArrowLeft, Download, RotateCw, Camera, MapPin, Calendar,
-  Ruler, Aperture, Zap, FileImage, Brain, Loader2,
+  Ruler, Aperture, Zap, FileImage, Brain, Loader2, Trash2,
 } from "lucide-react";
 
 export default function MediaDetailPage() {
   const params = useParams();
+  const router = useRouter();
   const id = params.id as string;
   const queryClient = useQueryClient();
   const [showSimilar, setShowSimilar] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const handleDelete = async () => {
+    setIsDeleting(true);
+    try {
+      await deleteMedia(id, "detail");
+      queryClient.invalidateQueries({ queryKey: ["gallery"] });
+      queryClient.invalidateQueries({ queryKey: ["trash-count"] });
+      queryClient.invalidateQueries({ queryKey: ["trash-media"] });
+      queryClient.invalidateQueries({ queryKey: ["recommendations-all-media"] });
+      router.push("/gallery");
+    } catch (e) {
+      console.error("Failed to soft delete asset", e);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   const { data: asset, isLoading, error } = useQuery({
     queryKey: ["media", id],
@@ -102,6 +121,12 @@ export default function MediaDetailPage() {
           >
             <Download className="w-3.5 h-3.5" /> Download
           </a>
+          <button
+            onClick={() => setShowDeleteModal(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium text-rose-400 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 transition-colors"
+          >
+            <Trash2 className="w-3.5 h-3.5" /> Delete
+          </button>
         </div>
       </div>
 
@@ -316,6 +341,59 @@ export default function MediaDetailPage() {
           })}
         </div>
       </div>
+
+      {/* Move to Recycle Bin Confirmation Modal */}
+      {showDeleteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn">
+          <div
+            className="w-full max-w-md rounded-2xl border border-default p-6 shadow-2xl space-y-4"
+            style={{ backgroundColor: "var(--bg-secondary)" }}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-dialog-title"
+          >
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400">
+                <Trash2 className="w-6 h-6 text-rose-400" />
+              </div>
+              <div>
+                <h3
+                  id="delete-dialog-title"
+                  className="text-base font-extrabold"
+                  style={{ color: "var(--text-primary)" }}
+                >
+                  Move to Recycle Bin?
+                </h3>
+                <p className="text-xs mt-0.5" style={{ color: "var(--text-tertiary)" }}>
+                  This photo can be restored for 30 days.
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+              Are you sure you want to move <strong className="text-white">{asset.filename}</strong> to the Recycle Bin?
+            </p>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                disabled={isDeleting}
+                onClick={() => setShowDeleteModal(false)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold border border-default hover:bg-[var(--bg-tertiary)] transition-colors disabled:opacity-50"
+                style={{ color: "var(--text-secondary)" }}
+              >
+                Cancel
+              </button>
+              <button
+                disabled={isDeleting}
+                onClick={handleDelete}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-xs font-extrabold text-white bg-rose-500 hover:bg-rose-600 transition-colors disabled:opacity-50"
+              >
+                {isDeleting ? <Loader2 className="w-4 h-4 animate-spin" /> : "Move to Bin"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

@@ -54,7 +54,7 @@ class SearchService:
         # ── Special bypass for full-library analytics queries ─────────────────
         if query_text.lower() == "photo":
             logger.info("Search Service: Bypassing Qdrant for special query 'photo'")
-            total_stmt = select(func.count(MediaAsset.id))
+            total_stmt = select(func.count(MediaAsset.id)).where(MediaAsset.is_deleted == False)
             total_result = await db.execute(total_stmt)
             total_filtered = total_result.scalar() or 0
 
@@ -62,8 +62,10 @@ class SearchService:
                 select(MediaAsset)
                 .options(
                     selectinload(MediaAsset.photo_metadata),
-                    selectinload(MediaAsset.ai_analysis)
+                    selectinload(MediaAsset.ai_analysis),
+                    selectinload(MediaAsset.quality_assessment)
                 )
+                .where(MediaAsset.is_deleted == False)
                 .order_by(MediaAsset.created_at.desc())
             )
             result = await db.execute(query)
@@ -99,8 +101,7 @@ class SearchService:
             offset=0
         )
 
-        # ── 3. Hydrate ALL candidates from PostgreSQL ────────────────────────
-        # We load all before pagination so the reranker sees the full candidate set.
+        # ── 3. Hydrate ALL non-deleted candidates from PostgreSQL ──────────────
         total_filtered = len(candidates)
         if not candidates:
             duration = time.perf_counter() - start_time
@@ -114,9 +115,10 @@ class SearchService:
             select(MediaAsset)
             .options(
                 selectinload(MediaAsset.photo_metadata),
-                selectinload(MediaAsset.ai_analysis)
+                selectinload(MediaAsset.ai_analysis),
+                selectinload(MediaAsset.quality_assessment)
             )
-            .where(MediaAsset.id.in_(all_ids))
+            .where(MediaAsset.id.in_(all_ids), MediaAsset.is_deleted == False)
         )
         pg_result = await db.execute(pg_query)
         assets = pg_result.scalars().all()
@@ -143,37 +145,110 @@ class SearchService:
             weights=weights,
         )
 
-        # ── 5. Paginate ───────────────────────────────────────────────────────
-        paginated = reranked[offset: offset + limit]
-
-        # ── 6. Build response with explanations ───────────────────────────────
+        # ── 5. Intent Detection & Validation Pipeline (Phases 1-3) ────────────
+        from app.modules.media.services.intent_service import IntentService, QueryIntent
         from app.modules.media.services.explanation_service import ExplanationService
 
+        intent, target_entity = IntentService.classify_intent(query_text)
+        logger.info(f"Search Service: Detected query intent [{intent}] for target entity '{target_entity}'")
+
+        valid_hits = []
+        similar_hits = []
+        valid_ids = set()
+
+        for hit in reranked:
+            asset = assets_map.get(hit["id"])
+            if not asset:
+                continue
+
+            is_valid, confidence, intent_reasons = IntentService.validate_asset_for_intent(
+                asset=asset,
+                intent=intent,
+                target_entity=target_entity,
+                score=hit["hybrid_score"]
+            )
+
+            # Excellent matches require passes intent validation & non-Low confidence
+            if is_valid and confidence != "Low":
+                hit["confidence_level"] = confidence
+                hit["all_boost_reasons"] = (hit.get("boost_reasons", []) or []) + intent_reasons
+                valid_hits.append(hit)
+                valid_ids.add(hit["id"])
+            else:
+                hit["confidence_level"] = "Similar"
+                hit["all_boost_reasons"] = ["Visual & semantic vector similarity match"]
+                similar_hits.append(hit)
+
+        # Deduplicate similar_hits against valid_ids and preserve original vector order
+        dedup_similar = [h for h in similar_hits if h["id"] not in valid_ids]
+
+        total_valid = len(valid_hits)
+        total_similar = len(dedup_similar)
+
+        # If zero trustworthy results AND zero similar photos, return contextual empty state
+        if total_valid == 0 and total_similar == 0 and intent != QueryIntent.GENERAL:
+            empty_message = IntentService.format_empty_message(query_text, intent, target_entity)
+            duration = time.perf_counter() - start_time
+            logger.info(f"Search finished (intent filter empty): query='{query_text}', message='{empty_message}', time={duration:.4f}s")
+            return {
+                "items": [],
+                "excellent_matches": [],
+                "similar_photos": [],
+                "total": 0,
+                "total_similar": 0,
+                "limit": limit,
+                "offset": offset,
+                "message": empty_message
+            }
+
+        # ── 6. Paginate ───────────────────────────────────────────────────────
+        paginated = valid_hits[offset: offset + limit]
+
+        # ── 7. Build response with explanations ───────────────────────────────
         ranked_items = []
         for hit in paginated:
             asset = assets_map.get(hit["id"])
             if asset:
                 asset.score = hit["hybrid_score"]
-                # Merge hybrid boost reasons with the base explanation
                 explanation = ExplanationService.generate_explanation(
                     query_text=query_text,
                     asset=asset,
                     score=hit["hybrid_score"],
-                    boost_reasons=hit.get("boost_reasons", []),
+                    boost_reasons=hit.get("all_boost_reasons", []),
+                    confidence_level=hit.get("confidence_level"),
                 )
                 asset.explanation = explanation
                 ranked_items.append(asset)
+
+        similar_items = []
+        for hit in dedup_similar:
+            asset = assets_map.get(hit["id"])
+            if asset:
+                asset.score = hit["hybrid_score"]
+                explanation = ExplanationService.generate_explanation(
+                    query_text=query_text,
+                    asset=asset,
+                    score=hit["hybrid_score"],
+                    boost_reasons=hit.get("all_boost_reasons", []),
+                    confidence_level="Similar",
+                )
+                asset.explanation = explanation
+                similar_items.append(asset)
 
         duration = time.perf_counter() - start_time
         logger.info(
             f"Search finished: query='{query_text}', "
             f"candidates={len(candidates)}, "
-            f"sliced={len(ranked_items)}, time={duration:.4f}s"
+            f"valid={total_valid}, similar={total_similar}, time={duration:.4f}s"
         )
 
         return {
             "items": ranked_items,
-            "total": total_filtered,
+            "excellent_matches": ranked_items,
+            "similar_photos": similar_items,
+            "total": total_valid,
+            "total_similar": total_similar,
             "limit": limit,
             "offset": offset,
+            "message": None if (total_valid > 0 or total_similar > 0) else f"No matching photos found for '{query_text}'."
         }

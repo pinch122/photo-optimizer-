@@ -59,6 +59,23 @@ export interface AIAnalysis {
   ai_confidence: number | null;
 }
 
+export interface QualityAssessment {
+  id?: string;
+  overall_score?: number | null;
+  quality_grade?: string | null;
+  sharpness_score?: number | null;
+  blur_score?: number | null;
+  exposure_score?: number | null;
+  brightness_score?: number | null;
+  aesthetic_score?: number | null;
+  resolution_score?: number | null;
+  confidence?: number | null;
+  issues?: string[] | null;
+  recommendation?: string | null;
+  provider_versions?: Record<string, string> | null;
+  provider_scores?: Record<string, any> | null;
+  evaluated_at?: string | null;
+}
 
 export interface MediaAsset {
   id: string;
@@ -69,9 +86,14 @@ export interface MediaAsset {
   status: AssetStatus;
   taken_at: string;
   created_at: string;
+  is_deleted?: boolean;
+  deleted_at?: string | null;
+  deleted_from?: string | null;
+  remaining_days?: number | null;
   photo_metadata: PhotoMetadata | null;
   p_hash: string | null;
   ai_analysis: AIAnalysis | null;
+  quality_assessment?: QualityAssessment | null;
 }
 
 export interface UploadResponse {
@@ -103,13 +125,18 @@ export interface SearchResult {
   p_hash: string | null;
   explanation: string[] | null;
   ai_analysis: AIAnalysis | null;
+  quality_assessment?: QualityAssessment | null;
 }
 
 export interface SearchResponse {
   items: SearchResult[];
+  excellent_matches?: SearchResult[];
+  similar_photos?: SearchResult[];
   total: number;
+  total_similar?: number;
   limit: number;
   offset: number;
+  message?: string | null;
 }
 
 export interface HealthResponse {
@@ -122,4 +149,3 @@ export interface MediaListResponse {
   limit: number;
   offset: number;
 }
-

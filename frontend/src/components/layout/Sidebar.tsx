@@ -15,8 +15,11 @@ import {
   PanelLeftClose,
   PanelLeft,
   Sparkles,
+  Trash2,
 } from "lucide-react";
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { getTrashCount } from "@/lib/api";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -26,12 +29,21 @@ const navItems = [
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
   { href: "/recommendations", label: "Recommendations", icon: Sparkles },
   { href: "/collections", label: "Collections", icon: FolderOpen },
+  { href: "/trash", label: "Recycle Bin", icon: Trash2, isTrash: true },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 export default function Sidebar() {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
+
+  const { data: trashData } = useQuery({
+    queryKey: ["trash-count"],
+    queryFn: getTrashCount,
+    refetchInterval: 10000,
+  });
+
+  const trashCount = trashData?.count ?? 0;
 
   return (
     <aside
@@ -66,7 +78,7 @@ export default function Sidebar() {
               key={item.href}
               href={item.href}
               className={cn(
-                "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors duration-150",
+                "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors duration-150 relative",
                 isActive
                   ? "bg-brand/10 text-brand border-l-2 border-brand"
                   : "hover:bg-[var(--bg-tertiary)]",
@@ -78,7 +90,12 @@ export default function Sidebar() {
               title={collapsed ? item.label : undefined}
             >
               <item.icon className="w-5 h-5 flex-shrink-0" />
-              {!collapsed && <span>{item.label}</span>}
+              {!collapsed && <span className="flex-1">{item.label}</span>}
+              {item.isTrash && trashCount > 0 && (
+                <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30">
+                  {trashCount}
+                </span>
+              )}
             </Link>
           );
         })}

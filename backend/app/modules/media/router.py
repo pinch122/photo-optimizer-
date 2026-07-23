@@ -7,10 +7,10 @@ from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from sqlalchemy.orm import selectinload
-from typing import List
+from typing import List, Optional, Dict, Any
 from app.database import get_db
-from app.modules.media.models import MediaAsset, PhotoMetadata, MediaEmbedding, AssetStatus
-from app.modules.media.schemas import UploadResponse, MediaAssetResponse, StatusResponse, SearchResponse, MediaListResponse, SimilarImageResponse
+from app.modules.media.models import MediaAsset, PhotoMetadata, MediaEmbedding, ImageQualityAssessment, AssetStatus
+from app.modules.media.schemas import UploadResponse, MediaAssetResponse, StatusResponse, SearchResponse, MediaListResponse, SimilarImageResponse, QualityAssessmentResponse, BulkTrashRequest, TrashCountResponse
 from app.modules.media.services.upload_service import UploadService, DuplicateAssetError
 from app.modules.media.services.storage_service import StorageService
 from app.modules.media.services.search_service import SearchService
@@ -96,6 +96,7 @@ async def reprocess_media(
         # 1. Clean up existing child extension tables
         await db.execute(delete(PhotoMetadata).where(PhotoMetadata.media_asset_id == id))
         await db.execute(delete(MediaEmbedding).where(MediaEmbedding.media_asset_id == id))
+        await db.execute(delete(ImageQualityAssessment).where(ImageQualityAssessment.media_asset_id == id))
         
         # 2. Safely clean up old thumbnail file on disk
         StorageService.delete_file(asset.thumbnail_path)
@@ -120,6 +121,25 @@ async def reprocess_media(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to trigger background re-processing execution."
+        )
+
+@router.post("/rebuild-ai-metadata")
+async def rebuild_ai_metadata(
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    HTTP POST endpoint to rebuild AI Memory Records for existing images.
+    Reuses existing embeddings without regenerating vectors.
+    """
+    try:
+        from app.modules.media.services.rebuild_ai_metadata_service import RebuildAIMetadataService
+        res = await RebuildAIMetadataService.rebuild_all_metadata(db)
+        return res
+    except Exception as e:
+        logger.error(f"Rebuild Router: Error rebuilding AI metadata: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to rebuild AI metadata: {str(e)}"
         )
 
 @router.get("/search", response_model=SearchResponse)
@@ -152,6 +172,136 @@ async def search_media(
             detail="Unexpected error occurred during query evaluation."
         )
 
+
+# ─── RECYCLE BIN / TRASH ENDPOINTS ──────────────────────────────────────────
+
+@router.get("/trash/count", response_model=TrashCountResponse)
+async def get_trash_count(db: AsyncSession = Depends(get_db)):
+    """
+    Get the total count of soft-deleted assets currently in the Recycle Bin.
+    """
+    from sqlalchemy import func
+    stmt = select(func.count(MediaAsset.id)).where(MediaAsset.is_deleted == True)
+    res = await db.execute(stmt)
+    count = res.scalar() or 0
+    return {"count": count}
+
+
+@router.get("/trash", response_model=MediaListResponse)
+async def list_trash(
+    limit: int = Query(50000, ge=1, le=50000),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get all soft-deleted assets currently in the Recycle Bin.
+    Automatically runs 30-day cleanup before returning items.
+    Calculates remaining_days for each asset.
+    """
+    from sqlalchemy import func
+    # Run auto-cleanup for items older than 30 days
+    await DeleteService.cleanup_expired_trash(db=db, retention_days=30)
+
+    count_stmt = select(func.count(MediaAsset.id)).where(MediaAsset.is_deleted == True)
+    count_res = await db.execute(count_stmt)
+    total = count_res.scalar() or 0
+
+    stmt = (
+        select(MediaAsset)
+        .options(
+            selectinload(MediaAsset.photo_metadata),
+            selectinload(MediaAsset.ai_analysis),
+            selectinload(MediaAsset.quality_assessment)
+        )
+        .where(MediaAsset.is_deleted == True)
+        .order_by(MediaAsset.deleted_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    res = await db.execute(stmt)
+    items = res.scalars().all()
+
+    now = datetime.now(timezone.utc)
+    for asset in items:
+        if asset.deleted_at:
+            del_at = asset.deleted_at if asset.deleted_at.tzinfo else asset.deleted_at.replace(tzinfo=timezone.utc)
+            days_passed = (now - del_at).days
+            asset.remaining_days = max(0, 30 - days_passed)
+        else:
+            asset.remaining_days = 30
+
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset
+    }
+
+
+@router.post("/{id}/restore", status_code=status.HTTP_200_OK)
+async def restore_media(
+    id: uuid.UUID,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Restore a soft-deleted media asset from the Recycle Bin back to the active library.
+    """
+    success = await DeleteService.restore_media(db=db, asset_id=id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Media asset not found or restoration failed."
+        )
+    return {"message": "Media asset restored successfully"}
+
+
+@router.post("/trash/restore-bulk", status_code=status.HTTP_200_OK)
+async def bulk_restore_trash(
+    payload: BulkTrashRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Bulk restore multiple assets from the Recycle Bin.
+    """
+    restored_count = 0
+    for asset_id in payload.ids:
+        if await DeleteService.restore_media(db=db, asset_id=asset_id):
+            restored_count += 1
+    return {"message": f"Successfully restored {restored_count} items.", "restored_count": restored_count}
+
+
+@router.post("/trash/delete-permanent-bulk", status_code=status.HTTP_200_OK)
+async def bulk_delete_permanent_trash(
+    payload: BulkTrashRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Bulk permanently delete multiple assets from the Recycle Bin.
+    """
+    deleted_count = 0
+    for asset_id in payload.ids:
+        if await DeleteService.delete_media_permanently(db=db, asset_id=asset_id):
+            deleted_count += 1
+    return {"message": f"Successfully permanently deleted {deleted_count} items.", "deleted_count": deleted_count}
+
+
+@router.delete("/trash/empty", status_code=status.HTTP_200_OK)
+async def empty_trash(db: AsyncSession = Depends(get_db)):
+    """
+    Permanently delete all assets in the Recycle Bin.
+    """
+    stmt = select(MediaAsset.id).where(MediaAsset.is_deleted == True)
+    res = await db.execute(stmt)
+    trash_ids = res.scalars().all()
+
+    count = 0
+    for asset_id in trash_ids:
+        if await DeleteService.delete_media_permanently(db=db, asset_id=asset_id):
+            count += 1
+
+    return {"message": f"Successfully emptied Recycle Bin. Permanently deleted {count} items.", "deleted_count": count}
+
+
 @router.get("/{id}/status", response_model=StatusResponse)
 async def get_media_status(
     id: uuid.UUID,
@@ -183,7 +333,8 @@ async def get_media_metadata(
         select(MediaAsset)
         .options(
             selectinload(MediaAsset.photo_metadata),
-            selectinload(MediaAsset.ai_analysis)
+            selectinload(MediaAsset.ai_analysis),
+            selectinload(MediaAsset.quality_assessment)
         )
         .where(MediaAsset.id == id)
     )
@@ -196,6 +347,34 @@ async def get_media_metadata(
             detail="Media asset not found."
         )
     return asset
+
+@router.get("/{id}/quality", response_model=QualityAssessmentResponse)
+async def get_media_quality(
+    id: uuid.UUID,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    HTTP GET endpoint to retrieve stored quality assessment metadata for a media asset.
+    Reads exclusively from persistent database storage. Zero re-computation on GET.
+    """
+    asset_query = select(MediaAsset).where(MediaAsset.id == id)
+    asset_res = await db.execute(asset_query)
+    if not asset_res.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Media asset not found."
+        )
+
+    query = select(ImageQualityAssessment).where(ImageQualityAssessment.media_asset_id == id)
+    result = await db.execute(query)
+    quality = result.scalar_one_or_none()
+
+    if not quality:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Quality assessment record not found for this media asset."
+        )
+    return quality
 
 @router.get("/{id}/file")
 async def serve_media_file(
@@ -246,26 +425,26 @@ async def serve_media_file(
 
 @router.get("", response_model=MediaListResponse)
 async def list_media(
-    limit: int = Query(30, ge=1, le=100, description="Limit for pagination"),
+    limit: int = Query(30, ge=1, le=50000, description="Limit for pagination"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Get paginated media assets from the database.
+    Get paginated active (non-deleted) media assets from the database.
     """
     from sqlalchemy import func
-    # Count total assets
-    count_stmt = select(func.count(MediaAsset.id))
+    count_stmt = select(func.count(MediaAsset.id)).where(MediaAsset.is_deleted == False)
     count_result = await db.execute(count_stmt)
     total = count_result.scalar() or 0
 
-    # Retrieve assets with metadata
     stmt = (
         select(MediaAsset)
         .options(
             selectinload(MediaAsset.photo_metadata),
-            selectinload(MediaAsset.ai_analysis)
+            selectinload(MediaAsset.ai_analysis),
+            selectinload(MediaAsset.quality_assessment)
         )
+        .where(MediaAsset.is_deleted == False)
         .order_by(MediaAsset.created_at.desc())
         .limit(limit)
         .offset(offset)
@@ -280,29 +459,38 @@ async def list_media(
         "offset": offset
     }
 
+
 @router.delete("/{id}", status_code=status.HTTP_200_OK)
 async def delete_media(
     id: uuid.UUID,
+    permanent: bool = Query(False, description="If true, permanently delete files & vectors; else soft-delete to Recycle Bin"),
+    deleted_from: Optional[str] = Query(None, description="Optional name of category or view item was deleted from"),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    HTTP DELETE endpoint to remove a media asset, its files on disk, and Qdrant embeddings.
+    Delete endpoint:
+    - By default (permanent=false): Moves photo to Recycle Bin (soft delete).
+    - If permanent=true: Permanently removes DB record, disk files, and Qdrant vectors.
     """
     try:
-        success = await DeleteService.delete_media(db=db, asset_id=id)
+        if permanent:
+            success = await DeleteService.delete_media_permanently(db=db, asset_id=id)
+        else:
+            success = await DeleteService.soft_delete_media(db=db, asset_id=id, deleted_from=deleted_from)
+
         if not success:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Media asset not found."
             )
-        return {"message": "Media deleted successfully"}
+        return {"message": "Media deleted successfully" if not permanent else "Media permanently deleted successfully"}
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Delete Router: Unexpected failure during deletion of asset [{id}]: {e}")
+        logger.error(f"Delete Router: Failure during deletion of asset [{id}]: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to delete media asset from backend repository."
+            detail="Failed to delete media asset."
         )
 
 
@@ -321,7 +509,7 @@ async def find_similar_images(
     from app.modules.media.services.qdrant_service import QdrantService
 
     # 1. Check if media asset exists in PostgreSQL first
-    stmt = select(MediaAsset).where(MediaAsset.id == media_id)
+    stmt = select(MediaAsset).where(MediaAsset.id == media_id, MediaAsset.is_deleted == False)
     result = await db.execute(stmt)
     source_asset = result.scalar_one_or_none()
     if not source_asset:
@@ -387,9 +575,10 @@ async def find_similar_images(
         select(MediaAsset)
         .options(
             selectinload(MediaAsset.photo_metadata),
-            selectinload(MediaAsset.ai_analysis)
+            selectinload(MediaAsset.ai_analysis),
+            selectinload(MediaAsset.quality_assessment)
         )
-        .where(MediaAsset.id.in_(candidate_ids))
+        .where(MediaAsset.id.in_(candidate_ids), MediaAsset.is_deleted == False)
     )
     hydrated_result = await db.execute(hydrate_stmt)
     hydrated_assets = hydrated_result.scalars().all()
@@ -411,5 +600,43 @@ async def find_similar_images(
             })
             
     return response_items
+
+
+@router.post("/backfill-quality", status_code=status.HTTP_200_OK)
+async def backfill_quality(db: AsyncSession = Depends(get_db)):
+    """
+    Backfills missing Quality Assessments for all existing media assets in the database.
+    """
+    from app.modules.media.services.quality_persistence_service import QualityPersistenceService
+
+    stmt = (
+        select(MediaAsset)
+        .outerjoin(ImageQualityAssessment, MediaAsset.id == ImageQualityAssessment.media_asset_id)
+        .where(ImageQualityAssessment.id.is_(None))
+    )
+    res = await db.execute(stmt)
+    unprocessed = res.scalars().all()
+
+    success_count = 0
+    failed_count = 0
+
+    for asset in unprocessed:
+        try:
+            record = await QualityPersistenceService.evaluate_and_persist(asset.id, db)
+            if record:
+                success_count += 1
+            else:
+                failed_count += 1
+        except Exception as e:
+            failed_count += 1
+            logger.error(f"Backfill error on asset [{asset.id}]: {e}")
+
+    return {
+        "status": "completed",
+        "total_unprocessed": len(unprocessed),
+        "success": success_count,
+        "failed": failed_count,
+    }
+
 
 

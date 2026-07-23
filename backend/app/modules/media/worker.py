@@ -192,4 +192,29 @@ async def run_ai_analysis_task(asset_id: uuid.UUID) -> None:
         logger.error(
             f"AI Analysis Task: Unhandled exception for asset [{asset_id}]: {e}"
         )
+    finally:
+        # Trigger Quality Assessment after Gemini analysis completes
+        await run_quality_assessment_task(asset_id)
+
+
+async def run_quality_assessment_task(asset_id: uuid.UUID) -> None:
+    """
+    Fire-and-forget Quality Assessment tail task.
+
+    Runs after metadata extraction, CLIP embedding, and Gemini analysis complete.
+    Opens its own DB session so it is fully decoupled.
+    Never raises — if Quality Assessment fails, it logs the failure and leaves the asset intact.
+    """
+    logger.info(f"Quality Assessment Task: Initializing for asset [{asset_id}].")
+    try:
+        from app.modules.media.services.quality_persistence_service import QualityPersistenceService
+
+        async with async_session() as db:
+            await QualityPersistenceService.evaluate_and_persist(asset_id, db)
+
+        logger.info(f"Quality Assessment Task: Completed for asset [{asset_id}].")
+    except Exception as e:
+        logger.error(
+            f"Quality Assessment Task: Unhandled exception for asset [{asset_id}]: {e}"
+        )
 
