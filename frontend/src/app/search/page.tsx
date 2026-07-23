@@ -20,13 +20,6 @@ const DYNAMIC_CATEGORY_SUGGESTIONS = [
   { name: "Sunset", query: "sunset" },
 ];
 
-function getSimilarityLabel(score: number): string {
-  if (score >= 0.35) return "Excellent Match";
-  if (score >= 0.28) return "High Match";
-  if (score >= 0.22) return "Good Match";
-  return "Match";
-}
-
 function SearchContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -39,7 +32,6 @@ function SearchContent() {
   const [latency, setLatency] = useState<number | null>(null);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
-  const [showAllSimilar, setShowAllSimilar] = useState(false);
 
   const toggleExpanded = (id: string) => {
     setExpandedIds((prev) => {
@@ -76,9 +68,7 @@ function SearchContent() {
     catch (e) { console.error("Failed to clear search history", e); }
   };
 
-  // ── Fetch ────────────────────────────────────────────────────────────
-  // IMPORTANT: useQuery MUST be declared before any derived variables
-  // that reference `data`, otherwise they see `undefined` on every render.
+  // ── Unified Search Fetch ─────────────────────────────────────────────
   const { data, isLoading, isFetching, isError } = useQuery({
     queryKey: ["search", searchQuery],
     queryFn: async () => {
@@ -90,14 +80,13 @@ function SearchContent() {
       return result;
     },
     enabled: searchQuery.length > 0,
-    staleTime: 0,           // always fetch fresh
-    gcTime: 5 * 60 * 1000, // keep in memory 5 min after unmount
+    staleTime: 0,
+    gcTime: 5 * 60 * 1000,
   });
 
-  // ── Derived state — declared AFTER useQuery so `data` is available ──
-  const excellentMatches = data?.excellent_matches ?? data?.items ?? [];
-  const similarPhotos = data?.similar_photos ?? [];
-  const hasResults = excellentMatches.length > 0 || similarPhotos.length > 0;
+  // ── Derived state for Unified Single-Grid Layout ──────────────────────
+  const items = data?.items ?? [];
+  const hasResults = items.length > 0;
 
   // ── Handlers ─────────────────────────────────────────────────────────
   const handleSearch = useCallback(() => {
@@ -152,7 +141,7 @@ function SearchContent() {
           <span className="text-brand">🔍</span> PhotoMind Search
         </h1>
         <p className="text-sm mb-8" style={{ color: "var(--text-secondary)" }}>
-          Search your memories using natural language
+          Search your memories using unified multimodal understanding
         </p>
 
         {/* Search Input */}
@@ -255,26 +244,23 @@ function SearchContent() {
         </div>
       </div>
 
-      {/* Search Meta — show when any results exist */}
+      {/* Search Meta Bar */}
       {searchQuery && data && hasResults && (
-        <div className="flex items-center gap-3 mb-4 text-sm" style={{ color: "var(--text-secondary)" }}>
-          <span>
-            Results for &ldquo;<span className="font-medium" style={{ color: "var(--text-primary)" }}>{searchQuery}</span>&rdquo;
-          </span>
-          <span>·</span>
-          <span>
-            {excellentMatches.length > 0 && `${excellentMatches.length} excellent`}
-            {excellentMatches.length > 0 && similarPhotos.length > 0 && ", "}
-            {similarPhotos.length > 0 && `${similarPhotos.length} similar`}
-          </span>
+        <div className="flex items-center justify-between mb-4 pb-2 border-b border-default text-sm" style={{ color: "var(--text-secondary)" }}>
+          <div className="flex items-center gap-2">
+            <span>
+              Results for &ldquo;<span className="font-medium" style={{ color: "var(--text-primary)" }}>{searchQuery}</span>&rdquo;
+            </span>
+            <span>·</span>
+            <span className="font-semibold" style={{ color: "var(--text-primary)" }}>
+              {data.total} photo{data.total === 1 ? "" : "s"} found
+            </span>
+          </div>
           {latency !== null && (
-            <>
-              <span>·</span>
-              <span className="inline-flex items-center gap-1">
-                <Clock className="w-3 h-3" />
-                {latency}ms
-              </span>
-            </>
+            <span className="inline-flex items-center gap-1 text-xs" style={{ color: "var(--text-tertiary)" }}>
+              <Clock className="w-3 h-3" />
+              {latency}ms
+            </span>
           )}
         </div>
       )}
@@ -312,253 +298,108 @@ function SearchContent() {
         </div>
       )}
 
-      {/* ── Two-Tier Results Layout ──────────────────────────────────────── */}
-      {/* Renders when ANY tier has results. Empty state is SUPPRESSED. */}
+      {/* ── Unified Single Result Grid ───────────────────────────────────── */}
       {data && hasResults && !isLoading && !isError && (
-        <div className="space-y-10">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+          {items.map((item) => {
+            const isConfirmed = item.match_type === "Confirmed";
+            const percent = scoreToPercent(item.score);
+            const isExpanded = expandedIds.has(item.id);
 
-          {/* ⭐ Tier 1: Excellent Matches */}
-          {excellentMatches.length > 0 && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between pb-2 border-b border-default">
-                <h2 className="text-base font-bold flex items-center gap-2" style={{ color: "var(--text-primary)" }}>
-                  <span>⭐ Excellent Matches</span>
-                  <span className="px-2 py-0.5 rounded-full text-xs font-extrabold bg-brand/10 text-brand border border-brand/20">
-                    {excellentMatches.length}
-                  </span>
-                </h2>
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-                {excellentMatches.map((item) => {
-                  const percent = scoreToPercent(item.score);
-                  const isExpanded = expandedIds.has(item.id);
-                  return (
-                    <div
-                      key={item.id}
-                      className="group flex flex-col rounded-lg overflow-hidden border border-default transition-all duration-200 hover:border-[var(--border-subtle)] hover:shadow-md hover:scale-[1.02]"
-                      style={{ backgroundColor: "var(--bg-secondary)" }}
-                    >
-                      <Link href={`/media/${item.id}`} className="relative aspect-square overflow-hidden" style={{ backgroundColor: "var(--bg-tertiary)" }}>
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={getThumbnailUrl(item.id)}
-                          alt={item.filename}
-                          className="w-full h-full object-cover transition-opacity duration-300"
-                          loading="lazy"
-                        />
-                        <span
-                          className="absolute top-2 right-2 z-10 px-2 py-0.5 rounded text-[10px] font-bold shadow-sm"
-                          style={{
-                            backgroundColor: item.score >= 0.35
-                              ? "var(--success)"
-                              : item.score >= 0.28
-                              ? "var(--accent-primary)"
-                              : "var(--text-tertiary)",
-                            color: "white",
-                          }}
-                        >
-                          {getSimilarityLabel(item.score)}
-                        </span>
-                      </Link>
-                      <div className="p-3 flex-1 flex flex-col justify-between">
-                        <div>
-                          <Link href={`/media/${item.id}`}>
-                            <p className="text-xs font-medium truncate hover:text-brand transition-colors cursor-pointer" style={{ color: "var(--text-primary)" }}>
-                              {item.filename}
-                            </p>
-                          </Link>
-                          <div className="flex items-center gap-2 mt-2">
-                            <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: "var(--bg-tertiary)" }}>
-                              <div
-                                className="h-full rounded-full transition-all duration-500"
-                                style={{
-                                  width: `${percent}%`,
-                                  background: percent >= 80
-                                    ? "linear-gradient(90deg, var(--accent-primary), var(--accent-hover))"
-                                    : percent >= 50
-                                    ? "var(--accent-primary)"
-                                    : "var(--text-tertiary)",
-                                }}
-                              />
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="mt-2">
-                          <div className="flex items-center justify-between text-[10px]" style={{ color: "var(--text-tertiary)" }}>
-                            <span>{formatFileSize(item.file_size)}</span>
-                            <span>Similarity: {item.score.toFixed(3)}</span>
-                          </div>
-
-                          <div className="flex items-center justify-between mt-2 pt-2 border-t border-[var(--border-default)]">
-                            <button
-                              onClick={(e) => {
-                                e.preventDefault();
-                                toggleExpanded(item.id);
-                              }}
-                              className="inline-flex items-center gap-0.5 px-2 py-1 rounded text-[10px] font-semibold border border-default hover:bg-[var(--bg-tertiary)] transition-colors"
-                              style={{ color: "var(--text-secondary)" }}
-                            >
-                              ⓘ Why?
-                            </button>
-                            <StatusBadge status={item.status} />
-                          </div>
-                        </div>
-                      </div>
-
-                      {isExpanded && item.explanation && item.explanation.length > 0 && (
-                        <div className="p-3 border-t border-default bg-[var(--bg-tertiary)] space-y-2 text-left">
-                          <p className="text-[10px] font-bold" style={{ color: "var(--text-primary)" }}>
-                            Why this matched
-                          </p>
-                          <div className="space-y-1">
-                            {item.explanation.map((exp: string, idx: number) => (
-                              <div key={idx} className="flex items-start gap-1 text-[10px]" style={{ color: "var(--text-secondary)" }}>
-                                <span className="text-[var(--success)] font-bold">✓</span>
-                                <span>{exp}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* ── No Excellent Matches notice (only when Tier 2 exists) ── */}
-          {excellentMatches.length === 0 && similarPhotos.length > 0 && (
-            <div
-              className="flex items-center gap-3 px-4 py-3 rounded-xl border border-default text-sm"
-              style={{ backgroundColor: "var(--bg-secondary)", color: "var(--text-secondary)" }}
-            >
-              <span className="text-lg">🔎</span>
-              <div>
-                <span className="font-semibold" style={{ color: "var(--text-primary)" }}>No Excellent Matches</span>
-                <span className="ml-2">— PhotoMind found no photos with strong evidence for &ldquo;{searchQuery}&rdquo;, but here are the most visually similar photos from your library.</span>
-              </div>
-            </div>
-          )}
-
-          {/* 🔍 Tier 2: Similar Photos */}
-          {similarPhotos.length > 0 && (
-            <div className="space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 pb-2 border-b border-default">
-                <div>
-                  <h2 className="text-base font-bold flex items-center gap-2" style={{ color: "var(--text-primary)" }}>
-                    <span>🔍 Similar Photos</span>
-                    <span className="px-2 py-0.5 rounded-full text-xs font-extrabold bg-[var(--bg-tertiary)] border border-default text-[var(--text-secondary)]">
-                      {similarPhotos.length}
-                    </span>
-                  </h2>
-                  <p className="text-xs mt-1" style={{ color: "var(--text-tertiary)" }}>
-                    Visually or semantically similar — lower confidence than Excellent Matches.
-                  </p>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-                {(showAllSimilar ? similarPhotos : similarPhotos.slice(0, 8)).map((item) => {
-                  const percent = scoreToPercent(item.score);
-                  const isExpanded = expandedIds.has(item.id);
-                  return (
-                    <div
-                      key={item.id}
-                      className="group flex flex-col rounded-lg overflow-hidden border border-default transition-all duration-200 hover:border-[var(--border-subtle)] hover:shadow-md hover:scale-[1.02]"
-                      style={{ backgroundColor: "var(--bg-secondary)" }}
-                    >
-                      <Link href={`/media/${item.id}`} className="relative aspect-square overflow-hidden" style={{ backgroundColor: "var(--bg-tertiary)" }}>
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={getThumbnailUrl(item.id)}
-                          alt={item.filename}
-                          className="w-full h-full object-cover transition-opacity duration-300 opacity-90 group-hover:opacity-100"
-                          loading="lazy"
-                        />
-                        <span className="absolute top-2 right-2 z-10 px-2 py-0.5 rounded text-[10px] font-bold shadow-sm bg-[var(--bg-tertiary)] border border-default text-[var(--text-secondary)]">
-                          Similar
-                        </span>
-                      </Link>
-                      <div className="p-3 flex-1 flex flex-col justify-between">
-                        <div>
-                          <Link href={`/media/${item.id}`}>
-                            <p className="text-xs font-medium truncate hover:text-brand transition-colors cursor-pointer" style={{ color: "var(--text-primary)" }}>
-                              {item.filename}
-                            </p>
-                          </Link>
-                          <div className="flex items-center gap-2 mt-2">
-                            <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: "var(--bg-tertiary)" }}>
-                              <div
-                                className="h-full rounded-full transition-all duration-500 bg-[var(--text-tertiary)]"
-                                style={{ width: `${percent}%` }}
-                              />
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="mt-2">
-                          <div className="flex items-center justify-between text-[10px]" style={{ color: "var(--text-tertiary)" }}>
-                            <span>{formatFileSize(item.file_size)}</span>
-                            <span>Similarity: {item.score.toFixed(3)}</span>
-                          </div>
-
-                          <div className="flex items-center justify-between mt-2 pt-2 border-t border-[var(--border-default)]">
-                            <button
-                              onClick={(e) => {
-                                e.preventDefault();
-                                toggleExpanded(item.id);
-                              }}
-                              className="inline-flex items-center gap-0.5 px-2 py-1 rounded text-[10px] font-semibold border border-default hover:bg-[var(--bg-tertiary)] transition-colors"
-                              style={{ color: "var(--text-secondary)" }}
-                            >
-                              ⓘ Why?
-                            </button>
-                            <StatusBadge status={item.status} />
-                          </div>
-                        </div>
-                      </div>
-
-                      {isExpanded && item.explanation && item.explanation.length > 0 && (
-                        <div className="p-3 border-t border-default bg-[var(--bg-tertiary)] space-y-2 text-left">
-                          <p className="text-[10px] font-bold" style={{ color: "var(--text-primary)" }}>
-                            Why this matched
-                          </p>
-                          <div className="space-y-1">
-                            {item.explanation.map((exp: string, idx: number) => (
-                              <div key={idx} className="flex items-start gap-1 text-[10px]" style={{ color: "var(--text-secondary)" }}>
-                                <span className="text-[var(--text-tertiary)] font-bold">•</span>
-                                <span>{exp}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-
-              {similarPhotos.length > 8 && (
-                <div className="text-center pt-2">
-                  <button
-                    onClick={() => setShowAllSimilar(!showAllSimilar)}
-                    className="px-5 py-2.5 rounded-xl text-xs font-bold border border-default bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] transition-all shadow-sm text-[var(--text-secondary)]"
+            return (
+              <div
+                key={item.id}
+                className="group flex flex-col rounded-lg overflow-hidden border border-default transition-all duration-200 hover:border-[var(--border-subtle)] hover:shadow-md hover:scale-[1.02]"
+                style={{ backgroundColor: "var(--bg-secondary)" }}
+              >
+                <Link href={`/media/${item.id}`} className="relative aspect-square overflow-hidden" style={{ backgroundColor: "var(--bg-tertiary)" }}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={getThumbnailUrl(item.id)}
+                    alt={item.filename}
+                    className={`w-full h-full object-cover transition-opacity duration-300 ${isConfirmed ? "" : "opacity-90 group-hover:opacity-100"}`}
+                    loading="lazy"
+                  />
+                  {/* Badge: ✓ Confirmed vs 🔍 Similar */}
+                  <span
+                    className={`absolute top-2 right-2 z-10 px-2 py-0.5 rounded text-[10px] font-extrabold shadow-sm backdrop-blur-md ${
+                      isConfirmed
+                        ? "bg-brand text-white border border-brand-hover"
+                        : "bg-[var(--bg-tertiary)] border border-default text-[var(--text-secondary)]"
+                    }`}
                   >
-                    {showAllSimilar
-                      ? "Show Less"
-                      : `Show All Similar Photos (${similarPhotos.length - 8} more)`}
-                  </button>
+                    {isConfirmed ? "✓ Confirmed" : "🔍 Similar"}
+                  </span>
+                </Link>
+
+                <div className="p-3 flex-1 flex flex-col justify-between">
+                  <div>
+                    <Link href={`/media/${item.id}`}>
+                      <p className="text-xs font-medium truncate hover:text-brand transition-colors cursor-pointer" style={{ color: "var(--text-primary)" }}>
+                        {item.filename}
+                      </p>
+                    </Link>
+                    <div className="flex items-center gap-2 mt-2">
+                      <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: "var(--bg-tertiary)" }}>
+                        <div
+                          className="h-full rounded-full transition-all duration-500"
+                          style={{
+                            width: `${percent}%`,
+                            background: isConfirmed
+                              ? "linear-gradient(90deg, var(--accent-primary), var(--accent-hover))"
+                              : "var(--text-tertiary)",
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-2">
+                    <div className="flex items-center justify-between text-[10px]" style={{ color: "var(--text-tertiary)" }}>
+                      <span>{formatFileSize(item.file_size)}</span>
+                      <span>Score: {item.score.toFixed(3)}</span>
+                    </div>
+
+                    <div className="flex items-center justify-between mt-2 pt-2 border-t border-[var(--border-default)]">
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault();
+                          toggleExpanded(item.id);
+                        }}
+                        className="inline-flex items-center gap-0.5 px-2 py-1 rounded text-[10px] font-semibold border border-default hover:bg-[var(--bg-tertiary)] transition-colors"
+                        style={{ color: "var(--text-secondary)" }}
+                      >
+                        ⓘ Why?
+                      </button>
+                      <StatusBadge status={item.status} />
+                    </div>
+                  </div>
                 </div>
-              )}
-            </div>
-          )}
+
+                {isExpanded && item.explanation && item.explanation.length > 0 && (
+                  <div className="p-3 border-t border-default bg-[var(--bg-tertiary)] space-y-2 text-left">
+                    <p className="text-[10px] font-bold" style={{ color: "var(--text-primary)" }}>
+                      Why this matched ({isConfirmed ? "Confirmed Match" : "Semantic Match"})
+                    </p>
+                    <div className="space-y-1">
+                      {item.explanation.map((exp: string, idx: number) => (
+                        <div key={idx} className="flex items-start gap-1 text-[10px]" style={{ color: "var(--text-secondary)" }}>
+                          <span className={isConfirmed ? "text-[var(--success)] font-bold" : "text-[var(--text-tertiary)]"}>
+                            {isConfirmed ? "✓" : "•"}
+                          </span>
+                          <span>{exp}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
-      {/* ── True Empty State — only when BOTH tiers are empty ───────────── */}
+      {/* True Empty State */}
       {data && !hasResults && searchQuery && !isLoading && !isFetching && !isError && (
         <div
           className="max-w-xl mx-auto my-10 p-8 rounded-3xl border border-default text-center space-y-6 shadow-2xl relative overflow-hidden transition-all"
@@ -576,7 +417,7 @@ function SearchContent() {
               No photos matching &ldquo;<span className="text-brand">{searchQuery}</span>&rdquo;
             </h2>
             <p className="text-xs sm:text-sm leading-relaxed max-w-md mx-auto" style={{ color: "var(--text-secondary)" }}>
-              PhotoMind searched your library but couldn&apos;t find any photos containing &ldquo;{searchQuery}&rdquo;.
+              PhotoMind searched your library but couldn&apos;t find any relevant photos for &ldquo;{searchQuery}&rdquo;.
             </p>
           </div>
 
@@ -584,7 +425,7 @@ function SearchContent() {
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
             <span>AI search completed</span>
             <span className="text-[var(--text-tertiary)]">·</span>
-            <span>No relevant matches found</span>
+            <span>No matches found</span>
             {latency !== null && (
               <>
                 <span className="text-[var(--text-tertiary)]">·</span>

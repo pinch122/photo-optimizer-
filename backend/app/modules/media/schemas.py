@@ -127,6 +127,7 @@ class SearchResultResponse(BaseModel):
     deleted_from: Optional[str] = None
     remaining_days: Optional[int] = None
     score: float
+    match_type: Optional[str] = "Confirmed"
     explanation: Optional[List[str]] = None
     photo_metadata: Optional[PhotoMetadataResponse] = None
     p_hash: Optional[str] = None

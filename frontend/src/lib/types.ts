@@ -121,6 +121,7 @@ export interface SearchResult {
   taken_at: string;
   created_at: string;
   score: number;
+  match_type?: string;
   photo_metadata: PhotoMetadata | null;
   p_hash: string | null;
   explanation: string[] | null;

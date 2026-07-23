@@ -145,16 +145,14 @@ class SearchService:
             weights=weights,
         )
 
-        # ── 5. Intent Detection & Validation Pipeline (Phases 1-3) ────────────
+        # ── 5. Intent Detection & Unified Ranking Computation ────────────────────
         from app.modules.media.services.intent_service import IntentService, QueryIntent
         from app.modules.media.services.explanation_service import ExplanationService
 
         intent, target_entity = IntentService.classify_intent(query_text)
         logger.info(f"Search Service: Detected query intent [{intent}] for target entity '{target_entity}'")
 
-        valid_hits = []
-        similar_hits = []
-        valid_ids = set()
+        unified_candidates = []
 
         for hit in reranked:
             asset = assets_map.get(hit["id"])
@@ -168,28 +166,45 @@ class SearchService:
                 score=hit["hybrid_score"]
             )
 
-            # Excellent matches require passes intent validation & non-Low confidence
-            if is_valid and confidence != "Low":
-                hit["confidence_level"] = confidence
-                hit["all_boost_reasons"] = (hit.get("boost_reasons", []) or []) + intent_reasons
-                valid_hits.append(hit)
-                valid_ids.add(hit["id"])
+            # Filter out invalid / contradictory hits to prevent false positives
+            if not is_valid and intent != QueryIntent.GENERAL:
+                continue
+
+            # Determine match_type ("Confirmed" vs "Similar")
+            # Confirmed = passes intent validation & has explicit metadata evidence OR non-low confidence
+            has_explicit_evidence = len(intent_reasons) > 0 or confidence in {"Very High", "High"}
+
+            if is_valid and has_explicit_evidence:
+                match_type = "Confirmed"
+                boost_weight = 0.35  # Explicit metadata boost ensures confirmed results rank top
+                confidence_level = confidence
+                all_reasons = (hit.get("boost_reasons", []) or []) + intent_reasons
             else:
-                hit["confidence_level"] = "Similar"
-                hit["all_boost_reasons"] = ["Visual & semantic vector similarity match"]
-                similar_hits.append(hit)
+                match_type = "Similar"
+                boost_weight = 0.00
+                confidence_level = "Similar"
+                all_reasons = ["Visual & semantic vector similarity match"]
 
-        # Deduplicate similar_hits against valid_ids and preserve original vector order
-        dedup_similar = [h for h in similar_hits if h["id"] not in valid_ids]
+            # Unified Score formula: final_score = hybrid_score + boost_weight
+            final_score = round(hit["hybrid_score"] + boost_weight, 6)
 
-        total_valid = len(valid_hits)
-        total_similar = len(dedup_similar)
+            hit["match_type"] = match_type
+            hit["final_score"] = final_score
+            hit["confidence_level"] = confidence_level
+            hit["all_boost_reasons"] = all_reasons
 
-        # If zero trustworthy results AND zero similar photos, return contextual empty state
-        if total_valid == 0 and total_similar == 0 and intent != QueryIntent.GENERAL:
+            unified_candidates.append(hit)
+
+        # Sort all candidates by final_score descending
+        unified_candidates.sort(key=lambda x: x["final_score"], reverse=True)
+
+        total_items = len(unified_candidates)
+
+        # If zero matching results, return contextual empty message
+        if total_items == 0 and intent != QueryIntent.GENERAL:
             empty_message = IntentService.format_empty_message(query_text, intent, target_entity)
             duration = time.perf_counter() - start_time
-            logger.info(f"Search finished (intent filter empty): query='{query_text}', message='{empty_message}', time={duration:.4f}s")
+            logger.info(f"Search finished (empty): query='{query_text}', message='{empty_message}', time={duration:.4f}s")
             return {
                 "items": [],
                 "excellent_matches": [],
@@ -202,53 +217,40 @@ class SearchService:
             }
 
         # ── 6. Paginate ───────────────────────────────────────────────────────
-        paginated = valid_hits[offset: offset + limit]
+        paginated = unified_candidates[offset: offset + limit]
 
         # ── 7. Build response with explanations ───────────────────────────────
         ranked_items = []
         for hit in paginated:
             asset = assets_map.get(hit["id"])
             if asset:
-                asset.score = hit["hybrid_score"]
-                explanation = ExplanationService.generate_explanation(
+                asset.score = hit["final_score"]
+                asset.match_type = hit["match_type"]
+                asset.explanation = ExplanationService.generate_explanation(
                     query_text=query_text,
                     asset=asset,
-                    score=hit["hybrid_score"],
+                    score=hit["final_score"],
                     boost_reasons=hit.get("all_boost_reasons", []),
                     confidence_level=hit.get("confidence_level"),
                 )
-                asset.explanation = explanation
                 ranked_items.append(asset)
 
-        similar_items = []
-        for hit in dedup_similar:
-            asset = assets_map.get(hit["id"])
-            if asset:
-                asset.score = hit["hybrid_score"]
-                explanation = ExplanationService.generate_explanation(
-                    query_text=query_text,
-                    asset=asset,
-                    score=hit["hybrid_score"],
-                    boost_reasons=hit.get("all_boost_reasons", []),
-                    confidence_level="Similar",
-                )
-                asset.explanation = explanation
-                similar_items.append(asset)
+        confirmed_items = [a for a in ranked_items if getattr(a, "match_type", "") == "Confirmed"]
+        similar_items = [a for a in ranked_items if getattr(a, "match_type", "") == "Similar"]
 
         duration = time.perf_counter() - start_time
         logger.info(
-            f"Search finished: query='{query_text}', "
-            f"candidates={len(candidates)}, "
-            f"valid={total_valid}, similar={total_similar}, time={duration:.4f}s"
+            f"Search finished (unified): query='{query_text}', "
+            f"candidates={len(candidates)}, total_returned={total_items}, time={duration:.4f}s"
         )
 
         return {
             "items": ranked_items,
-            "excellent_matches": ranked_items,
+            "excellent_matches": confirmed_items,
             "similar_photos": similar_items,
-            "total": total_valid,
-            "total_similar": total_similar,
+            "total": total_items,
+            "total_similar": len(similar_items),
             "limit": limit,
             "offset": offset,
-            "message": None if (total_valid > 0 or total_similar > 0) else f"No matching photos found for '{query_text}'."
+            "message": None
         }
