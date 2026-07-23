@@ -1,7 +1,7 @@
 import uuid
 from typing import List, Dict, Any, Optional
 from qdrant_client.http.models import Distance, VectorParams, PointStruct
-from app.qdrant_client_helper import get_qdrant_client
+import app.qdrant_client_helper
 from app.logging_config import logger
 
 class QdrantService:
@@ -21,7 +21,7 @@ class QdrantService:
         Creates it automatically with Cosine index checks if missing.
         """
         collection_name = cls.get_collection_name(model_name)
-        client = get_qdrant_client()
+        client = app.qdrant_client_helper.get_qdrant_client()
         
         try:
             # Check existence of target collection index
@@ -54,7 +54,7 @@ class QdrantService:
         """
         dimension = len(vector)
         collection_name = cls.ensure_collection(model_name, dimension)
-        client = get_qdrant_client()
+        client = app.qdrant_client_helper.get_qdrant_client()
         
         try:
             # Initialize Qdrant point structural format
@@ -79,7 +79,7 @@ class QdrantService:
         Removes the vector matching the asset UUID from the collection.
         """
         collection_name = cls.get_collection_name(model_name)
-        client = get_qdrant_client()
+        client = app.qdrant_client_helper.get_qdrant_client()
         
         try:
             if client.collection_exists(collection_name):
@@ -105,7 +105,7 @@ class QdrantService:
         Returns a list of dictionaries with point IDs (uuids) and similarity scores.
         """
         collection_name = cls.get_collection_name(model_name)
-        client = get_qdrant_client()
+        client = app.qdrant_client_helper.get_qdrant_client()
         
         try:
             if not client.collection_exists(collection_name):

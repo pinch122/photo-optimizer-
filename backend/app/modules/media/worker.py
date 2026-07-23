@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timezone
 from sqlalchemy import select
 from app.config import settings
-from app.database import async_session
+import app.database
 from app.modules.media.models import MediaAsset, PhotoMetadata, MediaEmbedding, AssetStatus
 from app.modules.media.services.storage_service import StorageService
 from app.modules.media.services.thumb_service import ThumbnailService
@@ -26,7 +26,7 @@ async def process_media_task(asset_id: uuid.UUID) -> None:
     logger.info(f"Background Worker: Initializing processing task for media asset [{asset_id}]")
     
     thumbnail_path = None
-    async with async_session() as session:
+    async with app.database.async_session() as session:
         try:
             # 1. Fetch asset and transition status to PROCESSING
             query = select(MediaAsset).where(MediaAsset.id == asset_id)
@@ -37,8 +37,8 @@ async def process_media_task(asset_id: uuid.UUID) -> None:
                 logger.error(f"Background Worker: Asset [{asset_id}] not found in database. Processing aborted.")
                 return
                 
-            if asset.status != AssetStatus.UPLOADED:
-                logger.warning(f"Background Worker: Asset [{asset_id}] status is '{asset.status}' (expected 'UPLOADED'). Processing aborted.")
+            if asset.status == AssetStatus.READY:
+                logger.info(f"Background Worker: Asset [{asset_id}] is already READY. Processing skipped.")
                 return
 
             # Update parent state to PROCESSING
@@ -181,7 +181,7 @@ async def run_ai_analysis_task(asset_id: uuid.UUID) -> None:
         provider = get_default_provider()
         service = AIAnalysisService(provider)
 
-        async with async_session() as db:
+        async with app.database.async_session() as db:
             await service.analyze_image(asset_id, db)
 
         logger.info(f"AI Analysis Task: Completed for asset [{asset_id}].")
@@ -209,7 +209,7 @@ async def run_quality_assessment_task(asset_id: uuid.UUID) -> None:
     try:
         from app.modules.media.services.quality_persistence_service import QualityPersistenceService
 
-        async with async_session() as db:
+        async with app.database.async_session() as db:
             await QualityPersistenceService.evaluate_and_persist(asset_id, db)
 
         logger.info(f"Quality Assessment Task: Completed for asset [{asset_id}].")

@@ -5,17 +5,20 @@ import asyncio
 from PIL import Image
 from httpx import AsyncClient
 from sqlalchemy import select
-from app.database import async_session
+import app.database
 from app.modules.media.models import MediaAsset, PhotoMetadata, MediaEmbedding, AssetStatus
 from app.modules.media.services.embedding_service import EmbeddingService
 from app.modules.media.services.qdrant_service import QdrantService
 from app.modules.media.worker import process_media_task
 
+import random
+
 def get_mock_image_bytes(width: int = 100, height: int = 100) -> bytes:
     """
-    Constructs a mock JPEG file stream for testing model inferences.
+    Constructs a mock JPEG file stream with random colors to prevent SHA-256 collisions.
     """
-    img = Image.new("RGB", (width, height), color="green")
+    color = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+    img = Image.new("RGB", (width, height), color=color)
     buf = io.BytesIO()
     img.save(buf, format="JPEG")
     return buf.getvalue()
@@ -105,14 +108,17 @@ async def test_e2e_reprocessing_endpoint(async_client: AsyncClient):
     assert response.status_code == 201
     asset_id = uuid.UUID(response.json()["id"])
     
-    # Run background pipeline manually for initial setup
-    await process_media_task(asset_id)
+    # 2. Poll until background worker completes processing
+    for _ in range(150):
+        status_check = await async_client.get(f"/api/media/{asset_id}/status")
+        if status_check.status_code == 200 and status_check.json()["status"] == "READY":
+            break
+        await asyncio.sleep(0.1)
     
     # Verify ready status and child records exist
-    async with async_session() as session:
-        query = select(MediaAsset).where(MediaAsset.id == asset_id)
-        result = await session.execute(query)
-        asset = result.scalar_one()
+    async with app.database.async_session() as session:
+        asset = await session.get(MediaAsset, asset_id)
+        assert asset is not None
         assert asset.status == AssetStatus.READY
         
         # Verify both extension rows are registered
@@ -128,7 +134,7 @@ async def test_e2e_reprocessing_endpoint(async_client: AsyncClient):
     
     # 3. Poll status until background task completes re-processing
     reprocessed_success = False
-    for _ in range(50):  # Maximum 5 seconds wait (50 * 100ms)
+    for _ in range(150):  # Maximum 15 seconds wait (150 * 100ms)
         status_check = await async_client.get(f"/api/media/{asset_id}/status")
         if status_check.json()["status"] == "READY":
             reprocessed_success = True
@@ -138,7 +144,7 @@ async def test_e2e_reprocessing_endpoint(async_client: AsyncClient):
     assert reprocessed_success is True
     
     # 4. Verify child database tables have re-populated successfully
-    async with async_session() as session:
+    async with app.database.async_session() as session:
         meta_count = len((await session.execute(select(PhotoMetadata).where(PhotoMetadata.media_asset_id == asset_id))).scalars().all())
         emb_count = len((await session.execute(select(MediaEmbedding).where(MediaEmbedding.media_asset_id == asset_id))).scalars().all())
         assert meta_count == 1

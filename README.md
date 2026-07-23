@@ -1,5 +1,8 @@
 # PhotoMind AI – Multimodal Personal Memory Assistant
 
+[![Backend CI](https://github.com/pinch122/photo-optimizer-/actions/workflows/backend-ci.yml/badge.svg)](https://github.com/pinch122/photo-optimizer-/actions/workflows/backend-ci.yml)
+[![Frontend CI](https://github.com/pinch122/photo-optimizer-/actions/workflows/frontend-ci.yml/badge.svg)](https://github.com/pinch122/photo-optimizer-/actions/workflows/frontend-ci.yml)
+
 PhotoMind AI is a production-grade personal memory assistant designed to help users intelligently search, organize, optimize, and interact with their media gallery using natural language processing, computer vision, and large language models (LLMs). It prioritizes user privacy and localized high-performance indexing.
 
 ---

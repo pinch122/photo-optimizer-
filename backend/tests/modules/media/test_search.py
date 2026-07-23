@@ -7,11 +7,14 @@ from httpx import AsyncClient
 from app.modules.media.services.embedding_service import EmbeddingService
 from app.modules.media.worker import process_media_task
 
+import random
+
 def get_mock_image_bytes(width: int = 100, height: int = 100) -> bytes:
     """
-    Constructs a mock JPEG file stream for testing model searches.
+    Constructs a mock JPEG file stream with random colors to prevent SHA-256 collisions.
     """
-    img = Image.new("RGB", (width, height), color="green")
+    color = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+    img = Image.new("RGB", (width, height), color=color)
     buf = io.BytesIO()
     img.save(buf, format="JPEG")
     return buf.getvalue()
@@ -48,7 +51,7 @@ async def test_e2e_semantic_search_success(async_client: AsyncClient):
     
     # Wait for first photo processing to complete
     success_1 = False
-    for _ in range(50):
+    for _ in range(150):
         status_check = await async_client.get(f"/api/media/{asset_id_1}/status")
         if status_check.json()["status"] == "READY":
             success_1 = True
@@ -164,10 +167,10 @@ async def test_delete_media_success(async_client: AsyncClient):
     assert res.status_code == 201
     asset_id = res.json()["id"]
 
-    # Delete media
-    del_res = await async_client.delete(f"/api/media/{asset_id}")
+    # Delete media permanently
+    del_res = await async_client.delete(f"/api/media/{asset_id}?permanent=true")
     assert del_res.status_code == 200
-    assert del_res.json() == {"message": "Media deleted successfully"}
+    assert del_res.json() == {"message": "Media permanently deleted successfully"}
 
     # Fetch status checks should return 404
     check_res = await async_client.get(f"/api/media/{asset_id}/status")

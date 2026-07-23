@@ -30,7 +30,7 @@ from sqlalchemy.pool import StaticPool
 
 # 3. Initialize in-memory SQLite for test database (StaticPool preserves in-memory DB across connections)
 test_engine = create_async_engine(
-    "sqlite+aiosqlite:///:memory:",
+    "sqlite+aiosqlite:///file:testdb?mode=memory&cache=shared&uri=true",
     connect_args={"check_same_thread": False},
     poolclass=StaticPool,
     echo=False
@@ -60,9 +60,10 @@ async def override_get_db():
             await session.close()
 
 # 7. Apply dependency overrides to FastAPI application
-from main import app
+from main import app as fastapi_app
+import app.modules.media.models
 from app.database import Base, get_db
-app.dependency_overrides[get_db] = override_get_db
+fastapi_app.dependency_overrides[get_db] = override_get_db
 
 @pytest.fixture(autouse=True)
 async def setup_test_environment():
@@ -78,6 +79,7 @@ async def setup_test_environment():
     
     # Initialize SQLite database structures
     async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
         
     yield
@@ -90,5 +92,5 @@ async def async_client():
     """
     Provides a configured AsyncClient referencing the FastAPI app with dependency overrides.
     """
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+    async with AsyncClient(transport=ASGITransport(app=fastapi_app), base_url="http://test") as ac:
         yield ac

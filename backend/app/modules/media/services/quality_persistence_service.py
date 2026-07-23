@@ -80,11 +80,8 @@ class QualityPersistenceService:
             # Map issues to list of string names
             issue_strings = [issue.value for issue in assessment.issues]
 
-            # Check if quality record already exists for upsert
-            qual_query = select(ImageQualityAssessment).where(ImageQualityAssessment.media_asset_id == asset_id)
-            qual_res = await db.execute(qual_query)
-            record = qual_res.scalar_one_or_none()
-
+            # Use eager-loaded quality assessment or create new
+            record = asset.quality_assessment
             if record is None:
                 record = ImageQualityAssessment(
                     id=uuid.uuid4(),

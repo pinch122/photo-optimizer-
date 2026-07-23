@@ -1,3 +1,4 @@
+import asyncio
 import io
 import uuid
 import pytest
@@ -10,11 +11,14 @@ from app.modules.media.services.upload_service import UploadService
 from app.modules.media.services.hashing_service import HashingService
 from app.modules.media.worker import process_media_task
 
+import random
+
 def get_mock_image_bytes(width: int = 100, height: int = 100) -> bytes:
     """
-    Dynamically constructs a valid 1x1 or custom dimensions JPEG to avoid static asset dependencies.
+    Dynamically constructs a valid JPEG with unique random color to avoid hash collisions.
     """
-    img = Image.new("RGB", (width, height), color="blue")
+    color = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+    img = Image.new("RGB", (width, height), color=color)
     buf = io.BytesIO()
     img.save(buf, format="JPEG")
     return buf.getvalue()
@@ -50,9 +54,13 @@ async def test_e2e_upload_and_processing_pipeline(async_client: AsyncClient):
     assert data["status"] == "UPLOADED"
     asset_id = uuid.UUID(data["id"])
     
-    # 2. Run the asynchronous processing worker task synchronously for testing
-    await process_media_task(asset_id)
-    
+    # 2. Poll until background worker completes processing
+    for _ in range(150):
+        status_response = await async_client.get(f"/api/media/{asset_id}/status")
+        if status_response.status_code == 200 and status_response.json()["status"] == "READY":
+            break
+        await asyncio.sleep(0.1)
+
     # 3. GET /api/media/{id}/status
     status_response = await async_client.get(f"/api/media/{asset_id}/status")
     assert status_response.status_code == 200
