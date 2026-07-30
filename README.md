@@ -1,9 +1,19 @@
 # PhotoMind AI – Multimodal Personal Memory Assistant
 
+<div align="center">
+
 [![Backend CI](https://github.com/pinch122/photo-optimizer-/actions/workflows/backend-ci.yml/badge.svg)](https://github.com/pinch122/photo-optimizer-/actions/workflows/backend-ci.yml)
 [![Frontend CI](https://github.com/pinch122/photo-optimizer-/actions/workflows/frontend-ci.yml/badge.svg)](https://github.com/pinch122/photo-optimizer-/actions/workflows/frontend-ci.yml)
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-Vercel-000000?style=for-the-badge&logo=vercel&logoColor=white)](https://photo-optimizer-frontend.vercel.app)
+[![Next.js](https://img.shields.io/badge/Frontend-Next.js%2014-black?style=for-the-badge&logo=next.js)](https://nextjs.org/)
+[![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Qdrant](https://img.shields.io/badge/VectorDB-Qdrant-red?style=for-the-badge)](https://qdrant.tech/)
 
-PhotoMind AI is a production-grade personal memory assistant designed to help users intelligently search, organize, optimize, and interact with their media gallery using natural language processing, computer vision, and large language models (LLMs). It prioritizes user privacy and localized high-performance indexing.
+**A production-grade personal memory assistant designed to search, organize, optimize, and interact with media galleries using CLIP vector embeddings, OCR, and AI analytics.**
+
+[🌐 Live Demo](https://photo-optimizer-frontend.vercel.app) • [📖 Architecture Docs](./docs) • [🚀 Quick Start](#development-setup)
+
+</div>
 
 ---
 
