@@ -4,6 +4,8 @@ from qdrant_client.http.models import Distance, VectorParams, PointStruct
 import app.qdrant_client_helper
 from app.logging_config import logger
 
+from app.exceptions import QdrantConnectionError
+
 class QdrantService:
     @classmethod
     def get_collection_name(cls, model_name: str) -> str:
@@ -21,10 +23,9 @@ class QdrantService:
         Creates it automatically with Cosine index checks if missing.
         """
         collection_name = cls.get_collection_name(model_name)
-        client = app.qdrant_client_helper.get_qdrant_client()
         
         try:
-            # Check existence of target collection index
+            client = app.qdrant_client_helper.get_qdrant_client()
             if not client.collection_exists(collection_name):
                 logger.info(f"Qdrant Service: Collection '{collection_name}' not found. Initializing with dimension={dimension}.")
                 client.create_collection(
@@ -36,9 +37,11 @@ class QdrantService:
                 )
                 logger.info(f"Qdrant Service: Collection '{collection_name}' created successfully.")
             return collection_name
-        except Exception as e:
-            logger.error(f"Qdrant Service: Failed verifying collection status for '{collection_name}': {e}")
+        except QdrantConnectionError:
             raise
+        except Exception as e:
+            logger.exception(f"Qdrant Service: Failed verifying collection status for '{collection_name}': {e}")
+            raise QdrantConnectionError("Unable to connect to Qdrant.") from e
 
     @classmethod
     def upsert_vector(
@@ -54,10 +57,9 @@ class QdrantService:
         """
         dimension = len(vector)
         collection_name = cls.ensure_collection(model_name, dimension)
-        client = app.qdrant_client_helper.get_qdrant_client()
         
         try:
-            # Initialize Qdrant point structural format
+            client = app.qdrant_client_helper.get_qdrant_client()
             point = PointStruct(
                 id=str(asset_id),
                 vector=vector,
@@ -69,9 +71,11 @@ class QdrantService:
                 points=[point]
             )
             logger.info(f"Qdrant Service: Upserted vector point for asset [{asset_id}] in collection '{collection_name}'")
-        except Exception as e:
-            logger.error(f"Qdrant Service: Failed upserting vector point for [{asset_id}] in '{collection_name}': {e}")
+        except QdrantConnectionError:
             raise
+        except Exception as e:
+            logger.exception(f"Qdrant Service: Failed upserting vector point for [{asset_id}] in '{collection_name}': {e}")
+            raise QdrantConnectionError("Unable to connect to Qdrant.") from e
 
     @classmethod
     def delete_vector(cls, asset_id: uuid.UUID, model_name: str) -> None:
@@ -79,9 +83,9 @@ class QdrantService:
         Removes the vector matching the asset UUID from the collection.
         """
         collection_name = cls.get_collection_name(model_name)
-        client = app.qdrant_client_helper.get_qdrant_client()
         
         try:
+            client = app.qdrant_client_helper.get_qdrant_client()
             if client.collection_exists(collection_name):
                 client.delete(
                     collection_name=collection_name,
@@ -89,8 +93,7 @@ class QdrantService:
                 )
                 logger.info(f"Qdrant Service: Deleted vector point for [{asset_id}] from collection '{collection_name}'")
         except Exception as e:
-            logger.error(f"Qdrant Service: Error deleting vector point for [{asset_id}] from '{collection_name}': {e}")
-            # Raise no exception to avoid interrupting clean-up chains
+            logger.warning(f"Qdrant Service: Error deleting vector point for [{asset_id}] from '{collection_name}': {e}")
 
     @classmethod
     def search_vectors(
@@ -105,9 +108,9 @@ class QdrantService:
         Returns a list of dictionaries with point IDs (uuids) and similarity scores.
         """
         collection_name = cls.get_collection_name(model_name)
-        client = app.qdrant_client_helper.get_qdrant_client()
         
         try:
+            client = app.qdrant_client_helper.get_qdrant_client()
             if not client.collection_exists(collection_name):
                 logger.warning(f"Qdrant Service: Collection '{collection_name}' does not exist during search query.")
                 return []
@@ -128,6 +131,9 @@ class QdrantService:
                     "payload": hit.payload
                 })
             return output
-        except Exception as e:
-            logger.error(f"Qdrant Service: Search query failed on collection '{collection_name}': {e}")
+        except QdrantConnectionError:
             raise
+        except Exception as e:
+            logger.exception(f"Qdrant Service: Search query failed on collection '{collection_name}': {e}")
+            raise QdrantConnectionError("Unable to connect to Qdrant.") from e
+

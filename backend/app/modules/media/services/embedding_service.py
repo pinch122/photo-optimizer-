@@ -7,6 +7,8 @@ from sentence_transformers import SentenceTransformer
 from app.config import settings
 from app.logging_config import logger
 
+from app.exceptions import EmbeddingModelError
+
 class EmbeddingService:
     _model: Optional[SentenceTransformer] = None
     _lock = threading.Lock()
@@ -20,15 +22,19 @@ class EmbeddingService:
         if cls._model is None:
             with cls._lock:
                 if cls._model is None:
-                    logger.info(f"CLIP Model: Loading weights for model '{settings.CLIP_MODEL_NAME}'...")
-                    os.makedirs(settings.HUGGINGFACE_CACHE_DIR, exist_ok=True)
-                    
-                    # Instantiate SentenceTransformer pointing to persistent volume cache
-                    cls._model = SentenceTransformer(
-                        model_name_or_path=settings.CLIP_MODEL_NAME,
-                        cache_folder=settings.HUGGINGFACE_CACHE_DIR
-                    )
-                    logger.info("CLIP Model: Initialized and weights loaded successfully.")
+                    try:
+                        logger.info(f"CLIP Model: Loading weights for model '{settings.CLIP_MODEL_NAME}'...")
+                        os.makedirs(settings.HUGGINGFACE_CACHE_DIR, exist_ok=True)
+
+                        # Instantiate SentenceTransformer pointing to persistent volume cache
+                        cls._model = SentenceTransformer(
+                            model_name_or_path=settings.CLIP_MODEL_NAME,
+                            cache_folder=settings.HUGGINGFACE_CACHE_DIR
+                        )
+                        logger.info("CLIP Model: Initialized and weights loaded successfully.")
+                    except Exception as e:
+                        logger.exception(f"CLIP Model: Critical initialization failure for model '{settings.CLIP_MODEL_NAME}': {e}")
+                        raise EmbeddingModelError("Embedding model failed to initialize.") from e
         return cls._model
 
     @classmethod
@@ -40,18 +46,15 @@ class EmbeddingService:
         try:
             model = cls.get_model()
             with Image.open(file_path) as img:
-                # Ensure the image is converted to RGB color mode
                 if img.mode != "RGB":
                     img = img.convert("RGB")
-                
-                # Execute inference with built-in cosine normalization
                 embedding_array = model.encode(img, normalize_embeddings=True)
-                
-                # Convert numpy array to standardized float list
                 return embedding_array.tolist()
+        except EmbeddingModelError:
+            raise
         except Exception as e:
-            logger.error(f"CLIP Model: Inference failure on target '{file_path}': {e}")
-            raise ValueError(f"Inference error computing media vector: {e}")
+            logger.exception(f"CLIP Model: Inference failure on target '{file_path}': {e}")
+            raise EmbeddingModelError("Embedding model failed during image inference.") from e
 
     @classmethod
     async def generate_embedding(cls, file_path: str) -> List[float]:
@@ -74,9 +77,11 @@ class EmbeddingService:
             model = cls.get_model()
             embedding_array = model.encode(text, normalize_embeddings=True)
             return embedding_array.tolist()
+        except EmbeddingModelError:
+            raise
         except Exception as e:
-            logger.error(f"CLIP Model: Text inference failure on '{text}': {e}")
-            raise ValueError(f"Inference error computing text query vector: {e}")
+            logger.exception(f"CLIP Model: Text inference failure on '{text}': {e}")
+            raise EmbeddingModelError("Embedding model failed during text query evaluation.") from e
 
     @classmethod
     async def generate_text_embedding(cls, text: str) -> List[float]:
@@ -89,3 +94,4 @@ class EmbeddingService:
             cls.generate_text_embedding_sync,
             text
         )
+

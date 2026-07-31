@@ -2,12 +2,14 @@
 
 import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { useQuery } from "@tanstack/react-query";
+import axios from "axios";
 import { searchMedia, getThumbnailUrl } from "@/lib/api";
 import { formatFileSize, scoreToPercent } from "@/lib/utils";
 import StatusBadge from "@/components/shared/StatusBadge";
 import Link from "next/link";
-import { Search as SearchIcon, Loader2, Clock, Trash2, History, X, Sparkles } from "lucide-react";
+import { Search as SearchIcon, Loader2, Clock, Trash2, History, X, Sparkles, AlertTriangle, RotateCcw } from "lucide-react";
 import { useSearchParams, useRouter } from "next/navigation";
+
 
 const DYNAMIC_CATEGORY_SUGGESTIONS = [
   { name: "Beaches", query: "beach" },
@@ -69,7 +71,7 @@ function SearchContent() {
   };
 
   // ── Unified Search Fetch ─────────────────────────────────────────────
-  const { data, isLoading, isFetching, isError } = useQuery({
+  const { data, isLoading, isFetching, isError, error, refetch } = useQuery({
     queryKey: ["search", searchQuery],
     queryFn: async () => {
       const start = performance.now();
@@ -83,6 +85,23 @@ function SearchContent() {
     staleTime: 0,
     gcTime: 5 * 60 * 1000,
   });
+
+  const getErrorMessage = (err: unknown): string => {
+    if (axios.isAxiosError(err)) {
+      return (
+        err.response?.data?.detail ||
+        err.message ||
+        "Search service temporarily unavailable."
+      );
+    }
+    if (err instanceof Error) {
+      return err.message;
+    }
+    return "Search service temporarily unavailable.";
+  };
+
+  const errorMessage = isError ? getErrorMessage(error) : "";
+
 
   // ── Derived state for Unified Single-Grid Layout ──────────────────────
   const items = data?.items ?? [];
@@ -282,21 +301,40 @@ function SearchContent() {
 
       {/* Error state */}
       {isError && (
-        <div className="text-center py-12 max-w-md mx-auto">
-          <p className="text-sm font-semibold" style={{ color: "var(--error)" }}>
-            Search Engine connection failure
-          </p>
-          <p className="text-xs mt-1" style={{ color: "var(--text-tertiary)" }}>
-            Verify Qdrant is healthy and query model is initialized.
-          </p>
-          <button
-            onClick={() => handleSearch()}
-            className="mt-4 px-3.5 py-2 rounded-md text-xs font-semibold text-white bg-brand hover:bg-brand-hover"
-          >
-            Retry Search
-          </button>
+        <div className="text-center py-10 max-w-md mx-auto rounded-xl border border-default p-6" style={{ backgroundColor: "var(--bg-secondary)" }}>
+          <div className="p-3 rounded-full bg-red-500/10 text-red-400 w-fit mx-auto mb-3">
+            <AlertTriangle className="w-6 h-6" />
+          </div>
+          <h3 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+            Unable to search your photo library right now.
+          </h3>
+          <div className="mt-3 p-3 rounded-lg border border-[var(--border-default)] text-left" style={{ backgroundColor: "var(--bg-tertiary)" }}>
+            <span className="text-[10px] font-semibold uppercase tracking-wider block mb-1" style={{ color: "var(--text-tertiary)" }}>
+              Reason
+            </span>
+            <p className="text-xs font-mono" style={{ color: "var(--text-secondary)" }}>
+              {errorMessage}
+            </p>
+          </div>
+          <div className="mt-5 flex items-center justify-center gap-3">
+            <button
+              onClick={() => refetch()}
+              className="px-4 py-2 rounded-lg text-xs font-semibold text-white bg-brand hover:bg-brand-hover transition-colors inline-flex items-center gap-1.5"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              Retry
+            </button>
+            <Link
+              href="/analytics"
+              className="px-4 py-2 rounded-lg text-xs font-semibold border border-[var(--border-default)] hover:bg-[var(--bg-tertiary)] transition-colors"
+              style={{ color: "var(--text-primary)" }}
+            >
+              Check System Status
+            </Link>
+          </div>
         </div>
       )}
+
 
       {/* ── Unified Single Result Grid ───────────────────────────────────── */}
       {data && hasResults && !isLoading && !isError && (

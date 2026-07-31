@@ -25,6 +25,8 @@ from app.modules.media.services.hybrid_reranker import HybridReranker, HybridWei
 from app.logging_config import logger
 
 
+from app.exceptions import InvalidSearchQueryError
+
 class SearchService:
 
     @classmethod
@@ -37,19 +39,9 @@ class SearchService:
     ) -> Dict[str, Any]:
         """
         Orchestrate a hybrid semantic + Memory Record search.
-
-        Steps
-        -----
-        1. Encode query → CLIP embedding
-        2. Qdrant: retrieve top-N vector candidates
-        3. Threshold filter
-        4. Hydrate all filtered candidates from PostgreSQL (with ai_analysis)
-        5. HybridReranker: combine embedding score with AI Memory Record signals
-        6. Paginate
-        7. Attach explanations
         """
         if not query_text or not query_text.strip():
-            raise ValueError("Query string cannot be empty.")
+            raise InvalidSearchQueryError("Invalid search request: Query string cannot be empty.")
 
         # ── Special bypass for full-library analytics queries ─────────────────
         if query_text.lower() == "photo":
@@ -79,7 +71,8 @@ class SearchService:
                 "items": ranked_items,
                 "total": total_filtered,
                 "limit": len(ranked_items),
-                "offset": 0
+                "offset": 0,
+                "message": None if total_filtered > 0 else "Search index is empty."
             }
 
         start_time = time.perf_counter()
@@ -108,7 +101,17 @@ class SearchService:
             logger.info(
                 f"Search finished (no candidates): query='{query_text}', time={duration:.4f}s"
             )
-            return {"items": [], "total": 0, "limit": limit, "offset": offset}
+            return {
+                "items": [],
+                "excellent_matches": [],
+                "similar_photos": [],
+                "total": 0,
+                "total_similar": 0,
+                "limit": limit,
+                "offset": offset,
+                "message": "Search index is empty. Upload photos to start searching."
+            }
+
 
         all_ids = [hit["id"] for hit in candidates]
         pg_query = (

@@ -142,6 +142,8 @@ async def rebuild_ai_metadata(
             detail=f"Failed to rebuild AI metadata: {str(e)}"
         )
 
+from app.exceptions import SearchEngineError
+
 @router.get("/search", response_model=SearchResponse)
 async def search_media(
     q: str = Query(..., min_length=1, description="Natural language search query"),
@@ -160,17 +162,25 @@ async def search_media(
             offset=offset
         )
         return results
+    except SearchEngineError as e:
+        logger.warning(f"Search Router: SearchEngineError [{e.__class__.__name__}] for q='{q}': {e.message}")
+        raise HTTPException(
+            status_code=e.status_code,
+            detail=e.message
+        )
     except ValueError as e:
+        logger.warning(f"Search Router: ValueError for q='{q}': {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+            detail=f"Invalid search request: {str(e)}"
         )
     except Exception as e:
-        logger.error(f"Search Router: Query search failure for q='{q}': {e}")
+        logger.exception(f"Search Router: Unhandled exception during query search for q='{q}': {e}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Unexpected error occurred during query evaluation."
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Search service temporarily unavailable."
         )
+
 
 
 # ─── RECYCLE BIN / TRASH ENDPOINTS ──────────────────────────────────────────
